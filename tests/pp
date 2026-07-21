@@ -1,0 +1,277 @@
+plugin api_incompatible failed during load: name 'cls_obj' is not defined
+Eplugin validated failed during load: name 'cls_obj' is not defined
+Eplugin bad failed during load: plugin module bad: import failed: import boom
+plugin ok failed during load: name 'cls_obj' is not defined
+Fplugin bad failed during load: plugin bad: PLUGIN_CLASS must be a class
+.plugin a failed during load: name 'cls_obj' is not defined
+Eplugin p1 failed during load: name 'cls_obj' is not defined
+Eplugin plain failed during load: name 'cls_obj' is not defined
+Eplugin bad failed during load: plugin bad: missing PLUGIN_CLASS
+.plugin missing failed during load: plugin file not found: /tmp/tmp9keup0gl/plugins/missing.py
+.plugin fixed failed during load: name 'cls_obj' is not defined
+Eplugin meta failed during load: name 'cls_obj' is not defined
+E.plugin p1 failed during load: name 'cls_obj' is not defined
+Eplugin compatible failed during load: name 'cls_obj' is not defined
+Eplugin incompatible failed during load: name 'cls_obj' is not defined
+Eplugin opaque failed during load: name 'cls_obj' is not defined
+Eplugin ok failed during load: name 'cls_obj' is not defined
+E.plugin p1 failed during load: name 'cls_obj' is not defined
+Eplugin worker failed during load: name 'cls_obj' is not defined
+Eplugin p1 failed during load: name 'cls_obj' is not defined
+E
+======================================================================
+ERROR: test_api_version_requirement_is_rejected (__main__.TempProject.test_api_version_requirement_is_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 570, in test_api_version_requirement_is_rejected
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_constant_validation_belongs_to_config_post_init (__main__.TempProject.test_constant_validation_belongs_to_config_post_init)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 461, in test_constant_validation_belongs_to_config_post_init
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_lifecycle_order_and_reverse_shutdown (__main__.TempProject.test_lifecycle_order_and_reverse_shutdown)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 229, in test_lifecycle_order_and_reverse_shutdown
+    manager.start()
+    ~~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 187, in start
+    self.load()
+    ~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_missing_attribute_raises (__main__.TempProject.test_missing_attribute_raises)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 172, in test_missing_attribute_raises
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_missing_module_constants_are_allowed (__main__.TempProject.test_missing_module_constants_are_allowed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 383, in test_missing_module_constants_are_allowed
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_module_constants_override_same_named_input_fields (__main__.TempProject.test_module_constants_override_same_named_input_fields)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 436, in test_module_constants_override_same_named_input_fields
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_module_constants_populate_matching_config_fields (__main__.TempProject.test_module_constants_populate_matching_config_fields)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 404, in test_module_constants_populate_matching_config_fields
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_plugin_attribute_and_config_merge (__main__.TempProject.test_plugin_attribute_and_config_merge)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 154, in test_plugin_attribute_and_config_merge
+    manager.start()
+    ~~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 187, in start
+    self.load()
+    ~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_plugin_version_requirement_is_accepted (__main__.TempProject.test_plugin_version_requirement_is_accepted)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 511, in test_plugin_version_requirement_is_accepted
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_plugin_version_requirement_is_rejected (__main__.TempProject.test_plugin_version_requirement_is_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 542, in test_plugin_version_requirement_is_rejected
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_pm_does_not_validate_constant_types (__main__.TempProject.test_pm_does_not_validate_constant_types)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 480, in test_pm_does_not_validate_constant_types
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_startup_failure_cleanup (__main__.TempProject.test_startup_failure_cleanup)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 355, in test_startup_failure_cleanup
+    manager.start()
+    ~~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 187, in start
+    self.load()
+    ~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_task_manager_instance_from_config (__main__.TempProject.test_task_manager_instance_from_config)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 316, in test_task_manager_instance_from_config
+    manager.start()
+    ~~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 187, in start
+    self.load()
+    ~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_task_registration_start_stop (__main__.TempProject.test_task_registration_start_stop)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 295, in test_task_registration_start_stop
+    manager.start()
+    ~~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 187, in start
+    self.load()
+    ~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+ERROR: test_unknown_config_param_rejected (__main__.TempProject.test_unknown_config_param_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 211, in test_unknown_config_param_rejected
+    manager.load()
+    ~~~~~~~~~~~~^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 177, in load
+    self._load_one(name, pgcfg)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/fabrizio/inrim/gscv/plugin-manager/src/plugin_manager.py", line 392, in _load_one
+    config_obj = self._build_plugin_config(name, cls_obj, module, entry)
+                                                 ^^^^^^^
+NameError: name 'cls_obj' is not defined
+
+======================================================================
+FAIL: test_continue_on_error_policy (__main__.TempProject.test_continue_on_error_policy)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/fabrizio/inrim/gscv/plugin-manager/tests/test_plugin_manager.py", line 375, in test_continue_on_error_policy
+    self.assertEqual(manager.plugins["ok"].state.value, "created")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'failed' != 'created'
+- failed
++ created
+
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.052s
+
+FAILED (failures=1, errors=15)

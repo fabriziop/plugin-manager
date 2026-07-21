@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69", "setuptools-scm[toml]>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plugin-manager"
+description = "Generic plugin manager for python applications"
+readme = "README.md"
+dynamic = ["version"]
+requires-python = ">=3.9"
+dependencies = ["packaging>=23"]
+license = "GPL-3.0-or-later"
+authors = [
+    {name = "Fabrizio Pollastri", email = "mxgbot@gmail.com"},
+]
+keywords = ["plugin", "management"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/fabriziop/plugin-manager"
+"Bug Reports" = "https://github.com/fabriziop/plugin-manager/issues"
+"Source" = "https://github.com/fabriziop/plugin-manager"
+
+
+[tool.setuptools]
+package-dir = {"plugin_manager" = "src"}
+packages = ["plugin_manager"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
