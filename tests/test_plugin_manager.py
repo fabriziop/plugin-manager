@@ -337,11 +337,12 @@ class TempProject(unittest.TestCase):
             {},
             manager={"task_manager": NoOpTaskManager},
         )
+        manager = PluginManager(cfg, self.context())
         with self.assertRaisesRegex(
             PluginConfigError,
             "must be a TaskManager instance",
         ):
-            PluginManager(cfg, self.context())
+            manager.start()
 
     def test_startup_failure_cleanup(self) -> None:
         self.write_plugin(

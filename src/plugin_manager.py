@@ -137,17 +137,6 @@ class PluginManager:
             self.config = PluginManagerConfig(**pmcfg)
         except TypeError as exc:
             raise PluginConfigError(f"invalid manager config: {exc}") from exc
-        # A runtime-checkable Protocol may consider a class object compliant
-        # when its class attributes match the protocol.  PM requires an
-        # already-created task-manager instance, so reject classes explicitly.
-        task_manager = self.config.task_manager
-        if task_manager is not None and (
-            isinstance(task_manager, type)
-            or not isinstance(task_manager, TaskManager)
-        ):
-            raise PluginConfigError(
-                "PLUGIN_MANAGER.task_manager must be a TaskManager instance"
-            )
 
         # Resolve application and plugin package paths once at startup.
         self.app_root = Path(self.context.get("app_root", Path.cwd())).resolve()
@@ -187,6 +176,7 @@ class PluginManager:
         # Loading is implicit when the application starts a fresh manager.
         if not self.plugins:
             self.load()
+        self._validate_task_manager()
         self._stopped = False
 
         # Start every constructed plugin before registering scheduled tasks.
@@ -275,6 +265,34 @@ class PluginManager:
                 task_spec["task_id"] = requested_id
                 task_id = self.config.task_manager.add_task(**task_spec)
                 self._task_ids.append(str(task_id))
+
+    def _validate_task_manager(self) -> None:
+        """Validate optional task manager and enforce it when scheduled tasks exist."""
+        task_manager = self.config.task_manager
+        if task_manager is not None and (
+            isinstance(task_manager, type)
+            or not isinstance(task_manager, TaskManager)
+        ):
+            raise PluginConfigError(
+                "PLUGIN_MANAGER.task_manager must be a TaskManager instance"
+            )
+
+        if task_manager is not None:
+            return
+
+        for plugin_name, entry in self._enabled_plugin_entries().items():
+            tasks = entry.get("tasks", {})
+            if not isinstance(tasks, dict):
+                continue
+            for task_name, spec in tasks.items():
+                if not isinstance(spec, dict):
+                    continue
+                if spec.get("execution", "direct") != "direct":
+                    raise PluginConfigError(
+                        "PLUGIN_MANAGER.task_manager is required when "
+                        f"plugin {plugin_name} task {task_name} uses "
+                        "execution != 'direct'"
+                    )
 
 
     def get_plugin_attribute(self, plugin_name: str, attribute_name: str) -> Any:
