@@ -354,6 +354,55 @@ class TempProject(unittest.TestCase):
         with self.assertRaises(PluginCapabilityError):
             manager.get_capability("service.ping")
 
+    def test_constructor_signature_error_is_reported_before_instantiation(self) -> None:
+        marker = self.tmp / "constructed"
+        self.write_plugin(
+            "bad_constructor",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def __init__(self, config):
+                    Path({str(marker)!r}).write_text("constructed", encoding="utf-8")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"bad_constructor": {"enabled": True}}),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(
+            PluginLoadError,
+            r"constructor must accept \(config, context\)",
+        ):
+            manager.load()
+
+        self.assertFalse(marker.exists())
+        self.assertEqual(manager.plugins["bad_constructor"].state, PluginState.FAILED)
+
+    def test_type_error_inside_constructor_is_not_rewritten(self) -> None:
+        self.write_plugin(
+            "constructor_bug",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def __init__(self, config, context):
+                    raise TypeError("internal constructor bug")
+            PLUGIN_CLASS = P
+            """,
+        )
+        manager = PluginManager(
+            self.config({"constructor_bug": {"enabled": True}}),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(TypeError, "internal constructor bug"):
+            manager.load()
+
+        self.assertEqual(manager.plugins["constructor_bug"].state, PluginState.FAILED)
+        self.assertIn("TypeError: internal constructor bug", manager.plugins["constructor_bug"].error or "")
+
     def test_missing_plugin_file(self) -> None:
         manager = PluginManager(self.config({"missing": {"enabled": True}}), self.context())
         with self.assertRaises(PluginLoadError):

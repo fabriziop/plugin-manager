@@ -979,13 +979,22 @@ class PluginManager:
         config_obj: Any,
         context: PluginContext,
     ) -> Any:
-        """Instantiate a plugin with its validated config and context."""
+        """Validate the constructor contract, then instantiate the plugin.
+
+        Signature errors are reported as ``PluginLoadError`` before the
+        constructor executes. Exceptions raised *inside* the constructor are
+        deliberately left untouched so plugin bugs keep their original type
+        and traceback.
+        """
         try:
-            return cls(config_obj, context)
-        except TypeError as exc:
+            signature = inspect.signature(cls)
+            signature.bind(config_obj, context)
+        except (TypeError, ValueError) as exc:
             raise PluginLoadError(
                 f"plugin {name}: PLUGIN_CLASS constructor must accept (config, context)"
             ) from exc
+
+        return cls(config_obj, context)
 
     def _import_plugin_module(self, module_name: str) -> ModuleType:
         """Import one plugin module from the configured plugin package."""

@@ -354,7 +354,11 @@ queues
 ## Defining a plugin
 
 A plugin module must define `PLUGIN_CLASS`. The class must inherit from
-`PluginBase` and its constructor must accept `(config, context)`.
+`PluginBase` and its constructor must accept `(config, context)`. The manager
+validates that call signature before construction. If the signature is
+incompatible, loading raises `PluginLoadError` without running the constructor.
+Exceptions raised inside a valid constructor are not rewritten, so plugin bugs
+retain their original exception type and traceback.
 
 ```python
 from dataclasses import dataclass
