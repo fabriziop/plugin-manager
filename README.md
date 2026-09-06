@@ -10,6 +10,7 @@ an application-owned task manager.
 
 Plugin Manager:
 
+- validates configuration that can be checked without executing plugin code;
 - loads enabled plugin modules from an application package;
 - builds each plugin's dataclass configuration;
 - validates plugin version requirements through `PluginBaseConfig`;
@@ -282,6 +283,48 @@ def __post_init__(self) -> None:
     super().__post_init__()
     # Additional plugin-specific checks follow.
 ```
+
+## Validation phase
+
+`PluginManager.validate()` performs a pre-import validation pass. It checks all
+configuration that the manager can verify without importing or instantiating a
+plugin, so structural configuration errors are rejected before any configured
+plugin code can execute.
+
+```python
+manager = PluginManager(main_config, context)
+manager.validate()
+manager.load()
+manager.start()
+```
+
+Calling `validate()` explicitly is optional. `load()` always calls it before
+importing enabled plugins, and `start()` calls `load()` automatically when no
+plugins have been loaded yet.
+
+The pre-import phase validates:
+
+- the top-level `PLUGIN_MANAGER` and `PLUGINS` configuration structure;
+- every plugin entry, including the required Boolean `enabled` field;
+- module names and the existence of module files for enabled plugins;
+- task declaration structure, task names, execution values, and method names;
+- whether a compatible task-manager instance is configured when scheduled
+  tasks require one.
+
+Disabled plugins are not imported or instantiated. Their entry structure is
+still validated where possible, but module-file existence is checked only for
+enabled plugins.
+
+Plugin-specific dataclass validation cannot run during this phase because the
+plugin's `Config` class is defined inside the plugin module. That validation
+therefore occurs during `load()`, after the pre-import checks have succeeded.
+This includes required plugin-specific dataclass fields, custom
+`__post_init__()` checks, and version/API-version requirements.
+
+A useful consequence is that configuration is checked as a set before imports
+begin. For example, if the first enabled plugin is valid but a later enabled
+plugin refers to a missing module file, `load()` raises before importing the
+first plugin.
 
 ## Application usage
 

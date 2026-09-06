@@ -154,10 +154,25 @@ class PluginManager:
         self._task_ids: list[str] = []
 
 
+    def validate(self) -> None:
+        """Validate all configuration that can be checked without importing plugins.
+
+        This phase is deliberately side-effect free with respect to plugin code:
+        no configured plugin module is imported or instantiated.  Plugin-specific
+        dataclass validation still happens during ``load()`` because the Config
+        class is defined by the plugin module itself.
+        """
+        self._validate_top_level_config()
+        entries = self._enabled_plugin_entries()
+        self._validate_plugin_files(entries)
+        self._validate_task_specs(entries)
+        self._validate_task_manager(entries)
+
     def load(self) -> None:
         """Validate, import, and construct enabled plugins without starting."""
-        # Validate the complete input before importing application code.
-        self._validate_top_level_config()
+        # Reject every configuration error discoverable without plugin imports
+        # before allowing any application plugin code to execute.
+        self.validate()
         entries = self._enabled_plugin_entries()
         log.info("loading %d enabled plugins", len(entries))
 
@@ -266,7 +281,45 @@ class PluginManager:
                 task_id = self.config.task_manager.add_task(**task_spec)
                 self._task_ids.append(str(task_id))
 
-    def _validate_task_manager(self) -> None:
+    def _validate_plugin_files(self, entries: dict[str, dict[str, Any]]) -> None:
+        """Ensure every enabled plugin module exists before importing any plugin."""
+        for name, entry in entries.items():
+            module_name = str(entry.get("module", name))
+            path = self.plugin_dir / f"{module_name}.py"
+            if not path.is_file():
+                raise PluginLoadError(f"plugin file not found: {path}")
+
+    def _validate_task_specs(self, entries: dict[str, dict[str, Any]]) -> None:
+        """Validate task declaration structure without resolving plugin methods."""
+        for plugin_name, entry in entries.items():
+            tasks = entry.get("tasks", {})
+            if not isinstance(tasks, dict):
+                raise PluginConfigError(f"plugin {plugin_name}: tasks must be a dict")
+            for task_name, spec in tasks.items():
+                if not isinstance(task_name, str) or not task_name.isidentifier():
+                    raise PluginConfigError(
+                        f"plugin {plugin_name}: task name must be a valid Python identifier"
+                    )
+                if not isinstance(spec, dict):
+                    raise PluginConfigError(
+                        f"plugin {plugin_name}: task {task_name}: spec must be a dict"
+                    )
+                execution = spec.get("execution", "direct")
+                if not isinstance(execution, str):
+                    raise PluginConfigError(
+                        f"plugin {plugin_name}: task {task_name}: execution must be a string"
+                    )
+                method_name = spec.get("method") or (
+                    "run_once" if task_name == "default" else task_name
+                )
+                if not isinstance(method_name, str) or not method_name.isidentifier():
+                    raise PluginConfigError(
+                        f"plugin {plugin_name}: task {task_name}: method must be a valid Python identifier"
+                    )
+
+    def _validate_task_manager(
+        self, entries: dict[str, dict[str, Any]] | None = None
+    ) -> None:
         """Validate optional task manager and enforce it when scheduled tasks exist."""
         task_manager = self.config.task_manager
         if task_manager is not None and (
@@ -280,7 +333,10 @@ class PluginManager:
         if task_manager is not None:
             return
 
-        for plugin_name, entry in self._enabled_plugin_entries().items():
+        if entries is None:
+            entries = self._enabled_plugin_entries()
+
+        for plugin_name, entry in entries.items():
             tasks = entry.get("tasks", {})
             if not isinstance(tasks, dict):
                 continue

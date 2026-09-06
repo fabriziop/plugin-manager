@@ -189,6 +189,110 @@ class TempProject(unittest.TestCase):
         with self.assertRaises(PluginLoadError):
             manager.load()
 
+    def test_missing_enabled_is_rejected_before_any_plugin_import(self) -> None:
+        marker = self.tmp / "first-imported"
+        self.write_plugin(
+            "first",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        self.write_plugin(
+            "invalid",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"first": {"enabled": True}, "invalid": {}}),
+            self.context(),
+        )
+
+        with self.assertRaises(PluginConfigError):
+            manager.load()
+
+        self.assertFalse(marker.exists())
+        self.assertNotIn("plugins.first", sys.modules)
+
+    def test_invalid_task_config_is_rejected_before_any_plugin_import(self) -> None:
+        marker = self.tmp / "worker-imported"
+        self.write_plugin(
+            "worker",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"worker": {"enabled": True, "tasks": ["bad"]}}),
+            self.context(),
+        )
+
+        with self.assertRaises(PluginConfigError):
+            manager.load()
+
+        self.assertFalse(marker.exists())
+        self.assertNotIn("plugins.worker", sys.modules)
+
+    def test_missing_later_plugin_file_prevents_earlier_plugin_import(self) -> None:
+        marker = self.tmp / "first-imported"
+        self.write_plugin(
+            "first",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"first": {"enabled": True}, "missing": {"enabled": True}}),
+            self.context(),
+        )
+
+        with self.assertRaises(PluginLoadError):
+            manager.load()
+
+        self.assertFalse(marker.exists())
+        self.assertNotIn("plugins.first", sys.modules)
+
+    def test_validate_does_not_import_plugins(self) -> None:
+        marker = self.tmp / "validated-imported"
+        self.write_plugin(
+            "validated",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"validated": {"enabled": True}}),
+            self.context(),
+        )
+
+        manager.validate()
+
+        self.assertFalse(marker.exists())
+        self.assertEqual(manager.plugins, {})
+
     def test_disabled_plugin_is_not_imported_or_loaded(self) -> None:
         marker = self.tmp / "disabled-imported"
         self.write_plugin(
