@@ -19,6 +19,7 @@ from plugin_manager import (
     PluginLifecycleError,
     PluginLoadError,
     PluginManager,
+    PluginState,
 )
 
 
@@ -334,9 +335,9 @@ class TempProject(unittest.TestCase):
             "p1",
             '''
             from dataclasses import dataclass
-            from plugin_manager import PluginBase
+            from plugin_manager import PluginBase, PluginBaseConfig
             @dataclass(frozen=True)
-            class Cfg:
+            class Cfg(PluginBaseConfig):
                 x: int = 1
             class P(PluginBase):
                 Config = Cfg
@@ -344,8 +345,67 @@ class TempProject(unittest.TestCase):
             ''',
         )
         manager = PluginManager(self.config({"p1": {"enabled": True, "y": 2}}), self.context())
-        with self.assertRaises(PluginConfigError):
+        with self.assertRaisesRegex(PluginConfigError, r"unknown config keys: \['y'\]"):
             manager.load()
+
+    def test_unknown_config_typo_is_not_silently_ignored(self) -> None:
+        self.write_plugin(
+            "p1",
+            '''
+            from dataclasses import dataclass
+            from plugin_manager import PluginBase, PluginBaseConfig
+            @dataclass(frozen=True)
+            class Cfg(PluginBaseConfig):
+                timeout: float = 10.0
+            class P(PluginBase):
+                Config = Cfg
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"p1": {"enabled": True, "timeuot": 30.0}}),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(
+            PluginConfigError, r"unknown config keys: \['timeuot'\]"
+        ):
+            manager.load()
+
+        self.assertIn("p1", manager.plugins)
+        self.assertIsNone(manager.plugins["p1"].instance)
+        self.assertEqual(manager.plugins["p1"].state, PluginState.FAILED)
+
+    def test_tasks_key_is_allowed_outside_plugin_config_dataclass(self) -> None:
+        self.write_plugin(
+            "p1",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def run_once(self):
+                    return None
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config(
+                {
+                    "p1": {
+                        "enabled": True,
+                        "tasks": {
+                            "default": {
+                                "execution": "direct",
+                            }
+                        },
+                    }
+                }
+            ),
+            self.context(),
+        )
+
+        manager.load()
+
+        self.assertIn("p1", manager.plugins)
 
     def test_lifecycle_order_and_reverse_shutdown(self) -> None:
         for name in ["a", "b"]:

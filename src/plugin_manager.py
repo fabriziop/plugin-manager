@@ -586,8 +586,19 @@ class PluginManager:
         if not issubclass(pgcfg_class, PluginBaseConfig):
             raise PluginConfigError(f"plugin {name}: Config must inherit from PluginBaseConfig")
 
-        # Copy only declared dataclass fields from the application config.
+        # Reject misspelled or unsupported plugin configuration instead of
+        # silently discarding it. ``tasks`` belongs to PluginManager rather
+        # than to the plugin Config dataclass, so it is the sole entry-level
+        # key accepted in addition to declared Config fields.
         allowed = {f.name for f in fields(pgcfg_class)}
+        manager_keys = {"tasks"}
+        unknown = set(pgcfgin) - allowed - manager_keys
+        if unknown:
+            raise PluginConfigError(
+                f"plugin {name}: unknown config keys: {sorted(unknown)}"
+            )
+
+        # Copy declared dataclass fields from the application config.
         values = {k: v for k, v in pgcfgin.items() if k in allowed}
         # Prominent PLUGIN_* constants define the corresponding metadata
         # fields and therefore take precedence over input dictionary values.

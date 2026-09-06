@@ -126,7 +126,16 @@ tasks   Mapping of task names to task specifications
 ```
 
 All other accepted values must correspond to fields in the plugin's config
-dataclass.
+dataclass. Unknown keys are rejected with `PluginConfigError`; they are not
+silently ignored. For example, if a plugin declares a `timeout` field, a
+misspelled `timeuot` entry causes loading to fail instead of falling back to
+the dataclass default.
+
+Plugin-specific key validation happens after that enabled plugin's module is
+imported, because its `Config` dataclass defines the accepted schema. It still
+happens before the config object or plugin instance is constructed. Disabled
+plugins are never imported, so their plugin-specific fields are intentionally
+not schema-checked.
 
 ## Runtime context
 
