@@ -1871,5 +1871,141 @@ class TempProject(unittest.TestCase):
         self.assertIn("public-label", output)
 
 
+    def test_stronger_diagnostics_include_lifecycle_compatibility_and_start_count(self) -> None:
+        self.write_plugin(
+            "diagnostic_plugin",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            """,
+        )
+        manager = PluginManager(
+            self.config({
+                "diagnostic_plugin": {
+                    "enabled": True,
+                    "req_version": ">=1.0",
+                    "req_api_version": ">=1.0",
+                }
+            }),
+            self.context(),
+        )
+
+        manager.start()
+        diag = manager.diagnostics()
+        plugin_diag = diag["plugins"]["diagnostic_plugin"]
+
+        self.assertEqual(diag["state"], "started")
+        self.assertTrue(diag["lifecycle"]["created_at"].endswith("Z"))
+        self.assertTrue(diag["lifecycle"]["loaded_at"].endswith("Z"))
+        self.assertTrue(diag["lifecycle"]["start_started_at"].endswith("Z"))
+        self.assertTrue(diag["lifecycle"]["started_at"].endswith("Z"))
+        self.assertGreaterEqual(diag["lifecycle"]["load_duration_ms"], 0)
+        self.assertGreaterEqual(diag["lifecycle"]["start_duration_ms"], 0)
+        self.assertTrue(plugin_diag["lifecycle"]["loaded_at"].endswith("Z"))
+        self.assertTrue(plugin_diag["lifecycle"]["start_started_at"].endswith("Z"))
+        self.assertTrue(plugin_diag["lifecycle"]["started_at"].endswith("Z"))
+        self.assertEqual(plugin_diag["lifecycle"]["start_count"], 1)
+        self.assertEqual(
+            plugin_diag["compatibility"]["plugin_version"],
+            {"version": "1.0.0", "requirement": ">=1.0", "status": "satisfied"},
+        )
+        self.assertEqual(
+            plugin_diag["compatibility"]["api_version"],
+            {"version": "1.0", "requirement": ">=1.0", "status": "satisfied"},
+        )
+
+        manager.stop()
+        manager.start()
+        restarted = manager.diagnostics()["plugins"]["diagnostic_plugin"]
+        self.assertEqual(restarted["lifecycle"]["start_count"], 2)
+
+    def test_diagnostics_map_registered_tasks_to_owning_plugin(self) -> None:
+        self.write_plugin(
+            "task_owner",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def periodic(self):
+                    return None
+            PLUGIN_CLASS = P
+            """,
+        )
+        task_manager = NoOpTaskManager()
+        manager = PluginManager(
+            self.config(
+                {
+                    "task_owner": {
+                        "enabled": True,
+                        "tasks": {
+                            "periodic": {"execution": "task", "task_id": "owned-task"}
+                        },
+                    }
+                },
+                {"task_manager": task_manager},
+            ),
+            self.context(),
+        )
+
+        manager.start()
+        diag = manager.diagnostics()
+
+        self.assertEqual(diag["tasks"], ["owned-task"])
+        self.assertEqual(diag["tasks_by_plugin"], {"task_owner": ["owned-task"]})
+        self.assertEqual(diag["plugins"]["task_owner"]["task_ids"], ["owned-task"])
+
+    def test_diagnostics_expose_structured_plugin_error(self) -> None:
+        self.write_plugin(
+            "optional_broken",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    raise RuntimeError("service offline")
+            PLUGIN_CLASS = P
+            """,
+        )
+        manager = PluginManager(
+            self.config({"optional_broken": {"enabled": True, "required": False}}),
+            self.context(),
+        )
+
+        manager.start()
+        diag = manager.diagnostics()["plugins"]["optional_broken"]
+
+        self.assertEqual(diag["state"], "failed")
+        self.assertEqual(diag["error"], "start: RuntimeError: service offline")
+        self.assertEqual(
+            diag["error_info"],
+            {"phase": "start", "type": "RuntimeError", "message": "service offline"},
+        )
+
+    def test_diagnostics_expose_structured_manager_start_error(self) -> None:
+        self.write_plugin(
+            "required_broken",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    raise ValueError("cannot initialize")
+            PLUGIN_CLASS = P
+            """,
+        )
+        manager = PluginManager(
+            self.config({"required_broken": {"enabled": True}}),
+            self.context(),
+        )
+
+        with self.assertRaises(PluginLifecycleError):
+            manager.start()
+
+        diag = manager.diagnostics()
+        self.assertEqual(diag["state"], "failed")
+        self.assertEqual(diag["error"]["phase"], "start")
+        self.assertIn(diag["error"]["type"], {"ValueError", "PluginLifecycleError"})
+        self.assertTrue(diag["error"]["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

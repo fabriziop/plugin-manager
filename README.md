@@ -781,11 +781,51 @@ application's responsibility.
 data = manager.diagnostics()
 ```
 
-The result contains:
+Diagnostics are designed to be directly serializable for health endpoints,
+debug pages, and support bundles. Existing keys such as `state`, `plugins`,
+`capabilities`, and the top-level `tasks` list remain available, with richer
+information alongside them.
 
-- the manager lifecycle `state`;
-- each plugin's state, error, and config-derived metadata;
-- the task IDs registered by this Plugin Manager instance.
+Manager diagnostics include:
+
+- lifecycle `state`;
+- UTC timestamps for creation, load/start attempts, and successful load/start/stop/close transitions;
+- monotonic load/start durations in milliseconds;
+- the latest structured manager startup error, when present;
+- the capability-to-provider map;
+- all task IDs plus a `tasks_by_plugin` ownership map.
+
+Each plugin diagnostic includes:
+
+- lifecycle `state`;
+- the existing human-readable `error` plus structured `error_info` containing
+  `phase`, exception `type`, and `message`;
+- `required`, `requires`, and advertised `capabilities`;
+- task IDs owned by that plugin;
+- load/start-attempt timestamps and durations, successful start/stop/close timestamps, and `start_count`;
+- plugin and API version compatibility results;
+- metadata including name, description, author, license, version, API version,
+  loading `source`, and source `origin`.
+
+For example:
+
+```python
+info = manager.diagnostics()
+
+print(info["lifecycle"]["start_duration_ms"])
+print(info["plugins"]["metrics"]["task_ids"])
+print(info["plugins"]["metrics"]["error_info"])
+print(info["plugins"]["metrics"]["compatibility"])
+```
+
+Compatibility status is `satisfied` when a configured version requirement was
+already validated during plugin config construction, and `not-required` when
+there is no requirement. Diagnostics do not re-run compatibility validation.
+
+Diagnostics deliberately do **not** contain plugin configuration values or
+tracebacks. This avoids turning a health/support payload into another path for
+secret configuration leakage. Error messages are still plugin-controlled, so
+plugins should avoid embedding credentials in exception text.
 
 Diagnostics do not query global scheduler state.
 

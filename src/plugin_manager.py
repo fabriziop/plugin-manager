@@ -8,6 +8,8 @@ import inspect
 import logging
 import sys
 import traceback
+from datetime import datetime, timezone
+from time import perf_counter
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -108,6 +110,20 @@ class Plugin:
     required: bool = True
     requires: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()
+    req_version: str | None = None
+    req_api_version: str | None = None
+    load_started_at: str | None = None
+    loaded_at: str | None = None
+    start_started_at: str | None = None
+    started_at: str | None = None
+    stopped_at: str | None = None
+    closed_at: str | None = None
+    load_duration_ms: float | None = None
+    start_duration_ms: float | None = None
+    start_count: int = 0
+    error_phase: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,8 +213,19 @@ class PluginManager:
         self.started_order: list[str] = []
         self.state = PluginManagerState.NEW
         self._task_ids: list[str] = []
+        self._task_ids_by_plugin: dict[str, list[str]] = {}
         self._tasks_registered = False
         self._capabilities: dict[str, tuple[str, str]] = {}
+        self._created_at = self._utc_now()
+        self._load_started_at: str | None = None
+        self._loaded_at: str | None = None
+        self._start_started_at: str | None = None
+        self._started_at: str | None = None
+        self._stopped_at: str | None = None
+        self._closed_at: str | None = None
+        self._load_duration_ms: float | None = None
+        self._start_duration_ms: float | None = None
+        self._manager_error: dict[str, str] | None = None
 
 
     def validate(self) -> None:
@@ -232,19 +259,38 @@ class PluginManager:
                 f"cannot load plugin manager while state is {self.state.value!r}"
             )
 
-        self.validate()
-        entries = self._enabled_plugin_entries()
-        log.info("loading %d enabled plugins", len(entries))
+        self._load_started_at = self._utc_now()
+        load_clock = perf_counter()
+        try:
+            self.validate()
+            entries = self._enabled_plugin_entries()
+            log.info("loading %d enabled plugins", len(entries))
 
-        for name, pgcfg in entries.items():
-            try:
-                self._load_one(name, pgcfg)
-            except Exception as exc:
-                self._plugin_failure(name, "load", exc)
-                if self.config.fail_policy == "fail-fast":
-                    self.state = PluginManagerState.FAILED
-                    raise
-        self.state = PluginManagerState.LOADED
+            for name, pgcfg in entries.items():
+                plugin_load_started_at = self._utc_now()
+                plugin_load_clock = perf_counter()
+                try:
+                    self._load_one(name, pgcfg)
+                except Exception as exc:
+                    self._plugin_failure(name, "load", exc)
+                    failed = self.plugins.get(name)
+                    if failed is not None:
+                        failed.load_started_at = plugin_load_started_at
+                        failed.load_duration_ms = self._elapsed_ms(plugin_load_clock)
+                    if self.config.fail_policy == "fail-fast":
+                        self.state = PluginManagerState.FAILED
+                        raise
+                else:
+                    loaded = self.plugins.get(name)
+                    if loaded is not None:
+                        loaded.load_started_at = plugin_load_started_at
+                        loaded.loaded_at = self._utc_now()
+                        loaded.load_duration_ms = self._elapsed_ms(plugin_load_clock)
+            self.state = PluginManagerState.LOADED
+            self._loaded_at = self._utc_now()
+            self._manager_error = None
+        finally:
+            self._load_duration_ms = self._elapsed_ms(load_clock)
 
 
     def start(self) -> None:
@@ -265,6 +311,8 @@ class PluginManager:
                 f"cannot start plugin manager while state is {self.state.value!r}"
             )
 
+        self._start_started_at = self._utc_now()
+        start_clock = perf_counter()
         restarting = self.state == PluginManagerState.STOPPED
         self._validate_task_manager()
         if restarting and self._task_ids:
@@ -303,10 +351,13 @@ class PluginManager:
                     continue
 
                 log.info("starting plugin %s", name)
+                plugin.start_started_at = self._utc_now()
+                plugin_start_clock = perf_counter()
                 try:
                     plugin.instance.start()
                 except Exception as exc:
                     self._plugin_failure(name, "start", exc)
+                    plugin.start_duration_ms = self._elapsed_ms(plugin_start_clock)
                     if plugin.required:
                         raise
                     log.warning(
@@ -315,6 +366,12 @@ class PluginManager:
                     continue
                 plugin.state = PluginState.STARTED
                 plugin.error = None
+                plugin.error_phase = None
+                plugin.error_type = None
+                plugin.error_message = None
+                plugin.started_at = self._utc_now()
+                plugin.start_duration_ms = self._elapsed_ms(plugin_start_clock)
+                plugin.start_count += 1
                 self.started_order.append(name)
 
             if not self._tasks_registered:
@@ -325,12 +382,16 @@ class PluginManager:
                     self.config.task_manager.resume(task_id)
 
             self.state = PluginManagerState.STARTED
+            self._started_at = self._utc_now()
+            self._manager_error = None
         except Exception as exc:
             self._plugin_failure("<manager>", "start", exc)
             self._stop_started_plugins()
             self._suspend_plugin_tasks()
             self.state = PluginManagerState.FAILED
             raise PluginLifecycleError(f"startup failed: {exc}") from exc
+        finally:
+            self._start_duration_ms = self._elapsed_ms(start_clock)
 
 
     def stop(self) -> None:
@@ -352,6 +413,7 @@ class PluginManager:
             if stopped_cleanly
             else PluginManagerState.FAILED
         )
+        self._stopped_at = self._utc_now()
 
 
     def close(self) -> None:
@@ -372,15 +434,17 @@ class PluginManager:
             try:
                 log.info("closing plugin %s", plugin.name)
                 plugin.instance.close()
+                plugin.closed_at = self._utc_now()
                 if plugin.state != PluginState.FAILED:
                     plugin.state = PluginState.CLOSED
             except Exception as exc:
                 plugin.state = PluginState.FAILED
-                plugin.error = f"close: {type(exc).__name__}: {exc}"
+                self._set_plugin_error(plugin, "close", exc)
                 log.exception("failed closing plugin %s", plugin.name)
 
         self.started_order.clear()
         self.state = PluginManagerState.CLOSED
+        self._closed_at = self._utc_now()
 
 
     def _suspend_plugin_tasks(self) -> None:
@@ -405,10 +469,12 @@ class PluginManager:
                 log.info("stopping plugin %s", name)
                 plugin.instance.stop()
                 plugin.state = PluginState.STOPPED
+                plugin.stopped_at = self._utc_now()
             except Exception as exc:
                 stopped_cleanly = False
                 plugin.state = PluginState.FAILED
-                plugin.error = f"stop: {type(exc).__name__}: {exc}"
+                self._set_plugin_error(plugin, "stop", exc)
+                plugin.stopped_at = self._utc_now()
                 log.exception("failed stopping plugin %s", name)
         self.started_order.clear()
         return stopped_cleanly
@@ -442,8 +508,9 @@ class PluginManager:
                 task_spec = {k: v for k, v in spec.items() if k not in {"execution", "method"}}
                 task_spec["task"] = self.get_plugin_attribute(plugin_name, method_name)
                 task_spec["task_id"] = requested_id
-                task_id = self.config.task_manager.add_task(**task_spec)
-                self._task_ids.append(str(task_id))
+                task_id = str(self.config.task_manager.add_task(**task_spec))
+                self._task_ids.append(task_id)
+                self._task_ids_by_plugin.setdefault(plugin_name, []).append(task_id)
 
     def _validate_plugin_sources(self, entries: dict[str, dict[str, Any]]) -> None:
         """Validate enabled plugin sources without executing plugin code."""
@@ -697,9 +764,27 @@ class PluginManager:
 
 
     def diagnostics(self) -> dict[str, Any]:
-        """Return serializable plugin states and registered task IDs."""
+        """Return a serializable snapshot of manager, plugin, and task health.
+
+        Existing top-level keys are preserved for compatibility. Additional
+        lifecycle, structured-error, compatibility, and per-plugin task data
+        make the result suitable for health endpoints and support bundles.
+        Diagnostics never include plugin configuration values.
+        """
         return {
             "state": self.state.value,
+            "lifecycle": {
+                "created_at": self._created_at,
+                "load_started_at": self._load_started_at,
+                "loaded_at": self._loaded_at,
+                "start_started_at": self._start_started_at,
+                "started_at": self._started_at,
+                "stopped_at": self._stopped_at,
+                "closed_at": self._closed_at,
+                "load_duration_ms": self._load_duration_ms,
+                "start_duration_ms": self._start_duration_ms,
+            },
+            "error": dict(self._manager_error) if self._manager_error else None,
             "capabilities": {
                 capability_id: plugin_name
                 for capability_id, (plugin_name, _attribute_name) in self._capabilities.items()
@@ -708,9 +793,30 @@ class PluginManager:
                 name: {
                     "state": plugin.state.value,
                     "error": plugin.error,
+                    "error_info": self._plugin_error_info(plugin),
                     "required": plugin.required,
                     "requires": list(plugin.requires),
                     "capabilities": list(plugin.capabilities),
+                    "task_ids": list(self._task_ids_by_plugin.get(name, ())),
+                    "lifecycle": {
+                        "load_started_at": plugin.load_started_at,
+                        "loaded_at": plugin.loaded_at,
+                        "start_started_at": plugin.start_started_at,
+                        "started_at": plugin.started_at,
+                        "stopped_at": plugin.stopped_at,
+                        "closed_at": plugin.closed_at,
+                        "load_duration_ms": plugin.load_duration_ms,
+                        "start_duration_ms": plugin.start_duration_ms,
+                        "start_count": plugin.start_count,
+                    },
+                    "compatibility": {
+                        "plugin_version": self._compatibility_diagnostic(
+                            plugin.version, plugin.req_version
+                        ),
+                        "api_version": self._compatibility_diagnostic(
+                            plugin.api_version, plugin.req_api_version
+                        ),
+                    },
                     "metadata": {
                         "name": plugin.name,
                         "description": plugin.description,
@@ -725,7 +831,51 @@ class PluginManager:
                 for name, plugin in self.plugins.items()
             },
             "tasks": list(self._task_ids),
+            "tasks_by_plugin": {
+                name: list(task_ids)
+                for name, task_ids in self._task_ids_by_plugin.items()
+            },
         }
+
+    @staticmethod
+    def _utc_now() -> str:
+        """Return a compact UTC timestamp suitable for serialized diagnostics."""
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> float:
+        """Return elapsed monotonic time in milliseconds, rounded for display."""
+        return round((perf_counter() - start) * 1000.0, 3)
+
+    @staticmethod
+    def _compatibility_diagnostic(
+        version: str | None, requirement: str | None
+    ) -> dict[str, Any]:
+        """Describe version compatibility already enforced during config build."""
+        return {
+            "version": version or None,
+            "requirement": requirement,
+            "status": "satisfied" if requirement is not None else "not-required",
+        }
+
+    @staticmethod
+    def _plugin_error_info(plugin: Plugin) -> dict[str, str] | None:
+        """Return structured plugin failure data without traceback/config values."""
+        if plugin.error_phase is None:
+            return None
+        return {
+            "phase": plugin.error_phase,
+            "type": plugin.error_type or "Exception",
+            "message": plugin.error_message or "",
+        }
+
+    @staticmethod
+    def _set_plugin_error(plugin: Plugin, phase: str, exc: Exception) -> None:
+        """Store backward-compatible and structured forms of one plugin error."""
+        plugin.error_phase = phase
+        plugin.error_type = type(exc).__name__
+        plugin.error_message = str(exc)
+        plugin.error = f"{phase}: {plugin.error_type}: {plugin.error_message}"
 
 
     #### private methods
@@ -832,6 +982,8 @@ class PluginManager:
             required=bool(pgcfg.get("required", True)),
             requires=tuple(pgcfg.get("requires", [])),
             capabilities=tuple(capabilities),
+            req_version=getattr(config_obj, "req_version", None),
+            req_api_version=getattr(config_obj, "req_api_version", None),
             **metadata,
         )
         for capability_id, attribute_name in capabilities.items():
@@ -1216,7 +1368,13 @@ class PluginManager:
             )
             self.plugins[name] = plugin
         plugin.state = PluginState.FAILED
-        plugin.error = f"{phase}: {type(exc).__name__}: {exc}"
+        self._set_plugin_error(plugin, phase, exc)
+        if name == "<manager>":
+            self._manager_error = {
+                "phase": phase,
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
         log.error("plugin %s failed during %s: %s", name, phase, exc)
         log.debug("plugin failure traceback:\n%s", traceback.format_exc())
 
