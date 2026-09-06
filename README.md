@@ -452,12 +452,36 @@ try:
     greet = manager.get_plugin_attribute("greeter", "greet")
     print(greet("Fabrizio"))
 finally:
-    manager.stop()
+    manager.close()
 ```
 
 `start()` loads plugins automatically when they have not already been loaded.
-`stop()` is idempotent, stops plugins in reverse startup order, and closes all
-created plugin instances.
+The manager has an explicit reusable lifecycle:
+
+```text
+NEW -> LOADED -> STARTED -> STOPPED -> STARTED -> ...
+                         \-> CLOSED
+NEW/LOADED/STOPPED/FAILED -> CLOSED
+```
+
+The public manager states are `new`, `loaded`, `started`, `stopped`, `failed`,
+and `closed`. `manager.state` exposes the corresponding `PluginManagerState`.
+
+- `load()` performs validation and constructs enabled plugins. Repeating it
+  while already loaded is a no-op; calling it after start/stop or close is an
+  invalid transition.
+- `start()` starts loaded plugins. Calling it while already started is
+  idempotent. Calling it after `stop()` restarts the same plugin instances.
+- `stop()` is reversible: it suspends manager-created tasks and calls plugin
+  `stop()` hooks in reverse startup order, but does **not** call `close()`.
+- `close()` is the final, idempotent cleanup operation. If necessary it first
+  stops the manager, then calls every instantiated plugin's `close()` hook.
+  `load()`, `start()`, and plugin access are rejected after close.
+- A load/start/stop failure places the manager in `failed`; final `close()` is
+  still allowed, but restarting from a partially failed lifecycle is rejected.
+
+Plugin states likewise include `created`, `started`, `stopped`, `closed`, and
+`failed`, making diagnostics reflect the lifecycle explicitly.
 
 ## Task-manager protocol
 
@@ -518,8 +542,19 @@ When `PluginManager.stop()` runs, it calls:
 manager.config.task_manager.suspend(task_id, for_=0)
 ```
 
-for each task registered by that manager. Plugin Manager does not resume,
-remove, clear, start, or stop scheduler tasks. Those operations remain the
+for each task registered by that manager. Task IDs are registered only once.
+If the stopped manager is started again and it owns scheduled tasks, the task
+manager must also provide:
+
+```python
+def resume(self, task_id: str) -> Any:
+    ...
+```
+
+`PluginManager.start()` then resumes the existing task IDs instead of adding
+duplicates. The extra `resume()` capability is required only for restart; a
+single start/stop/close lifecycle still needs only `add_task()` and
+`suspend()`. Global scheduler start/stop/remove/clear operations remain the
 application's responsibility.
 
 ## Diagnostics
@@ -530,6 +565,7 @@ data = manager.diagnostics()
 
 The result contains:
 
+- the manager lifecycle `state`;
 - each plugin's state, error, and config-derived metadata;
 - the task IDs registered by this Plugin Manager instance.
 
@@ -559,6 +595,8 @@ python examples/exec_modes_conductor/exec_modes_conductor.py
 
 The Conductor example creates and owns the scheduler in application code. Its
 adapter implements `add_task()` and an idempotent `suspend()` operation.
+An adapter that wants to support `manager.stop(); manager.start()` with
+scheduled tasks must additionally implement `resume(task_id)`.
 
 ## Testing
 

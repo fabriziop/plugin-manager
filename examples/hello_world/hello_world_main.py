@@ -38,7 +38,7 @@ CONFIG = {
 }
 
 def main() -> None:
-    """Load, start, and stop the minimal hello-world plugin."""
+    """Load, start, and close the minimal hello-world plugin."""
     # Configure the application service passed through plugin context.
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def main() -> None:
     )
     pm.load()
     pm.start()
-    pm.stop()
+    pm.close()
 
 if __name__ == "__main__":
     main()

@@ -120,7 +120,7 @@ def main() -> None:
         print(f"task jobs: {scheduler.read_jobs()}")
     finally:
         scheduler.stop()
-        manager.stop()
+        manager.close()
 
         # Task cleanup is an explicit application decision.
         scheduler.clear_tasks()

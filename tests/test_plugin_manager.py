@@ -19,6 +19,7 @@ from plugin_manager import (
     PluginLifecycleError,
     PluginLoadError,
     PluginManager,
+    PluginManagerState,
     PluginState,
     PluginBase,
 )
@@ -99,6 +100,7 @@ class NoOpTaskManager:
     def __init__(self) -> None:
         self.tasks: dict[str, dict[str, object]] = {}
         self.suspended: list[str] = []
+        self.resumed: list[str] = []
 
     def add_task(self, **task_spec: object) -> str:
         task_id = str(task_spec["task_id"])
@@ -108,6 +110,10 @@ class NoOpTaskManager:
     def suspend(self, task_id: str, for_: int = 0) -> str:
         self.suspended.append(task_id)
         return "forever" if for_ == 0 else str(for_)
+
+    def resume(self, task_id: str) -> str:
+        self.resumed.append(task_id)
+        return task_id
 
 
 class FakeTaskManager(NoOpTaskManager):
@@ -857,6 +863,184 @@ class TempProject(unittest.TestCase):
         manager.load()
         self.assertEqual(manager.plugins["bad"].state.value, "failed")
         self.assertEqual(manager.plugins["ok"].state.value, "created")
+
+    def test_manager_state_machine_restart_and_close(self) -> None:
+        self.write_plugin(
+            "cycle",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self): self.context.manager.events.append("start")
+                def stop(self): self.context.manager.events.append("stop")
+                def close(self): self.context.manager.events.append("close")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(self.config({"cycle": {"enabled": True}}), self.context())
+        manager.events = []  # type: ignore[attr-defined]
+
+        self.assertEqual(manager.state, PluginManagerState.NEW)
+        manager.load()
+        self.assertEqual(manager.state, PluginManagerState.LOADED)
+        manager.start()
+        self.assertEqual(manager.state, PluginManagerState.STARTED)
+        manager.stop()
+        self.assertEqual(manager.state, PluginManagerState.STOPPED)
+        self.assertEqual(manager.plugins["cycle"].state, PluginState.STOPPED)
+        self.assertEqual(manager.events, ["start", "stop"])  # type: ignore[attr-defined]
+
+        manager.start()
+        self.assertEqual(manager.state, PluginManagerState.STARTED)
+        manager.close()
+        self.assertEqual(manager.state, PluginManagerState.CLOSED)
+        self.assertEqual(manager.plugins["cycle"].state, PluginState.CLOSED)
+        self.assertEqual(
+            manager.events, ["start", "stop", "start", "stop", "close"]
+        )  # type: ignore[attr-defined]
+
+    def test_repeated_start_is_idempotent(self) -> None:
+        self.write_plugin(
+            "once",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self): self.context.manager.starts += 1
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(self.config({"once": {"enabled": True}}), self.context())
+        manager.starts = 0  # type: ignore[attr-defined]
+        manager.start()
+        manager.start()
+        self.assertEqual(manager.starts, 1)  # type: ignore[attr-defined]
+        manager.close()
+
+    def test_restart_resumes_tasks_without_reregistering(self) -> None:
+        self.write_plugin(
+            "worker_restart",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def run_once(self): pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        task_manager = NoOpTaskManager()
+        cfg = self.config(
+            {
+                "worker_restart": {
+                    "enabled": True,
+                    "tasks": {
+                        "periodic": {
+                            "execution": "task",
+                            "method": "run_once",
+                            "period_us": 10,
+                        }
+                    },
+                }
+            },
+            manager={"task_manager": task_manager},
+        )
+        manager = PluginManager(cfg, self.context())
+        manager.start()
+        self.assertEqual(list(task_manager.tasks), ["worker_restart:periodic"])
+        manager.stop()
+        manager.start()
+
+        self.assertEqual(list(task_manager.tasks), ["worker_restart:periodic"])
+        self.assertEqual(task_manager.suspended, ["worker_restart:periodic"])
+        self.assertEqual(task_manager.resumed, ["worker_restart:periodic"])
+        manager.close()
+
+    def test_restart_with_scheduled_tasks_requires_resume_support(self) -> None:
+        class SuspendOnlyTaskManager:
+            def __init__(self) -> None:
+                self.tasks: dict[str, dict[str, object]] = {}
+            def add_task(self, **task_spec: object) -> str:
+                task_id = str(task_spec["task_id"])
+                self.tasks[task_id] = dict(task_spec)
+                return task_id
+            def suspend(self, task_id: str, for_: int = 0) -> None:
+                return None
+
+        self.write_plugin(
+            "worker_no_resume",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def run_once(self): pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        cfg = self.config(
+            {
+                "worker_no_resume": {
+                    "enabled": True,
+                    "tasks": {"default": {"execution": "task", "method": "run_once"}},
+                }
+            },
+            manager={"task_manager": SuspendOnlyTaskManager()},
+        )
+        manager = PluginManager(cfg, self.context())
+        manager.start()
+        manager.stop()
+        with self.assertRaisesRegex(PluginLifecycleError, "must provide resume"):
+            manager.start()
+        self.assertEqual(manager.state, PluginManagerState.STOPPED)
+        manager.close()
+
+    def test_close_is_final_and_idempotent(self) -> None:
+        self.write_plugin(
+            "final",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def close(self): self.context.manager.closes += 1
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(self.config({"final": {"enabled": True}}), self.context())
+        manager.closes = 0  # type: ignore[attr-defined]
+        manager.load()
+        manager.close()
+        manager.close()
+        self.assertEqual(manager.closes, 1)  # type: ignore[attr-defined]
+        self.assertEqual(manager.state, PluginManagerState.CLOSED)
+        with self.assertRaisesRegex(PluginLifecycleError, "closed"):
+            manager.start()
+        with self.assertRaisesRegex(PluginLifecycleError, "closed"):
+            manager.load()
+        with self.assertRaisesRegex(PluginLifecycleError, "after manager.close"):
+            manager.get_plugin_attribute("final", "")
+
+    def test_startup_failure_moves_manager_to_failed(self) -> None:
+        self.write_plugin(
+            "fail_state",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self): raise RuntimeError("boom")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(self.config({"fail_state": {"enabled": True}}), self.context())
+        with self.assertRaises(PluginLifecycleError):
+            manager.start()
+        self.assertEqual(manager.state, PluginManagerState.FAILED)
+        with self.assertRaisesRegex(PluginLifecycleError, "state is 'failed'"):
+            manager.start()
+        manager.close()
+        self.assertEqual(manager.state, PluginManagerState.CLOSED)
+
+    def test_diagnostics_include_manager_state(self) -> None:
+        manager = PluginManager(self.config({}), self.context())
+        self.assertEqual(manager.diagnostics()["state"], "new")
+        manager.start()
+        self.assertEqual(manager.diagnostics()["state"], "started")
+        manager.stop()
+        self.assertEqual(manager.diagnostics()["state"], "stopped")
+        manager.close()
+        self.assertEqual(manager.diagnostics()["state"], "closed")
 
     def test_missing_module_constants_are_allowed(self) -> None:
         (self.plugins / "plain.py").write_text(

@@ -50,7 +50,19 @@ class PluginState(str, Enum):
     CREATED = "created"
     STARTED = "started"
     STOPPED = "stopped"
+    CLOSED = "closed"
     FAILED = "failed"
+
+
+class PluginManagerState(str, Enum):
+    """Describe the manager lifecycle state."""
+
+    NEW = "new"
+    LOADED = "loaded"
+    STARTED = "started"
+    STOPPED = "stopped"
+    FAILED = "failed"
+    CLOSED = "closed"
 
 
 @dataclass(slots=True)
@@ -156,8 +168,9 @@ class PluginManager:
         # Allocate runtime containers used during loading and lifecycle work.
         self.plugins: dict[str, Plugin] = {}
         self.started_order: list[str] = []
-        self._stopped = True
+        self.state = PluginManagerState.NEW
         self._task_ids: list[str] = []
+        self._tasks_registered = False
 
 
     def validate(self) -> None:
@@ -175,63 +188,152 @@ class PluginManager:
         self._validate_task_manager(entries)
 
     def load(self) -> None:
-        """Validate, import, and construct enabled plugins without starting."""
-        # Reject every configuration error discoverable without plugin imports
-        # before allowing any application plugin code to execute.
+        """Validate, import, and construct enabled plugins without starting.
+
+        ``load()`` is valid only before the manager has been started. Repeated
+        calls while already loaded are harmless; loading after start/stop or
+        after close is rejected so lifecycle transitions stay explicit.
+        """
+        if self.state == PluginManagerState.CLOSED:
+            raise PluginLifecycleError("cannot load a closed plugin manager")
+        if self.state == PluginManagerState.LOADED:
+            return
+        if self.state != PluginManagerState.NEW:
+            raise PluginLifecycleError(
+                f"cannot load plugin manager while state is {self.state.value!r}"
+            )
+
         self.validate()
         entries = self._enabled_plugin_entries()
         log.info("loading %d enabled plugins", len(entries))
 
-        # Load plugins independently so the configured failure policy applies.
         for name, pgcfg in entries.items():
             try:
                 self._load_one(name, pgcfg)
             except Exception as exc:
                 self._plugin_failure(name, "load", exc)
                 if self.config.fail_policy == "fail-fast":
+                    self.state = PluginManagerState.FAILED
                     raise
+        self.state = PluginManagerState.LOADED
 
 
     def start(self) -> None:
-        """Start plugins and register tasks requested by their configuration."""
-        # Loading is implicit when the application starts a fresh manager.
-        if not self.plugins:
-            self.load()
-        self._validate_task_manager()
-        self._stopped = False
+        """Start or restart plugins and activate their configured tasks.
 
-        # Start every constructed plugin before registering scheduled tasks.
+        The first start registers scheduled tasks exactly once. A later start
+        after ``stop()`` resumes those task IDs instead of registering
+        duplicates. Calling ``start()`` while already started is idempotent.
+        """
+        if self.state == PluginManagerState.CLOSED:
+            raise PluginLifecycleError("cannot start a closed plugin manager")
+        if self.state == PluginManagerState.STARTED:
+            return
+        if self.state == PluginManagerState.NEW:
+            self.load()
+        if self.state not in {PluginManagerState.LOADED, PluginManagerState.STOPPED}:
+            raise PluginLifecycleError(
+                f"cannot start plugin manager while state is {self.state.value!r}"
+            )
+
+        restarting = self.state == PluginManagerState.STOPPED
+        self._validate_task_manager()
+        if restarting and self._task_ids:
+            self._validate_task_resumer()
+
+        self.started_order.clear()
         try:
             for name, plugin in self.plugins.items():
                 if plugin.instance is None or plugin.state == PluginState.FAILED:
                     continue
+                if plugin.state == PluginState.CLOSED:
+                    raise PluginLifecycleError(f"plugin {name!r} is already closed")
                 log.info("starting plugin %s", name)
                 plugin.instance.start()
                 plugin.state = PluginState.STARTED
+                plugin.error = None
                 self.started_order.append(name)
-            self._register_plugin_tasks()
+
+            if not self._tasks_registered:
+                self._register_plugin_tasks()
+                self._tasks_registered = True
+            elif restarting:
+                for task_id in self._task_ids:
+                    self.config.task_manager.resume(task_id)
+
+            self.state = PluginManagerState.STARTED
         except Exception as exc:
             self._plugin_failure("<manager>", "start", exc)
-            self.stop()
+            self._stop_started_plugins()
+            self._suspend_plugin_tasks()
+            self.state = PluginManagerState.FAILED
             raise PluginLifecycleError(f"startup failed: {exc}") from exc
 
 
     def stop(self) -> None:
-        """Suspend PM-created tasks, then stop and close plugins."""
-        # Make shutdown idempotent for application cleanup paths.
-        if self._stopped:
-            return
-        self._stopped = True
+        """Suspend manager-created tasks and stop plugins without closing them.
 
-        # Suspend only tasks registered by this manager. The application owns
-        # all other task and scheduler lifecycle operations.
+        ``stop()`` is reversible: a subsequent ``start()`` restarts plugin
+        instances and resumes previously registered task IDs. It is idempotent
+        when the manager is new, loaded, or already stopped.
+        """
+        if self.state == PluginManagerState.CLOSED:
+            return
+        if self.state != PluginManagerState.STARTED:
+            return
+
+        self._suspend_plugin_tasks()
+        stopped_cleanly = self._stop_started_plugins()
+        self.state = (
+            PluginManagerState.STOPPED
+            if stopped_cleanly
+            else PluginManagerState.FAILED
+        )
+
+
+    def close(self) -> None:
+        """Permanently release plugin resources and close the manager.
+
+        ``close()`` is final and idempotent. If the manager is running it first
+        performs the reversible ``stop()`` transition, then calls ``close()``
+        on every instantiated plugin in reverse load order.
+        """
+        if self.state == PluginManagerState.CLOSED:
+            return
+        if self.state == PluginManagerState.STARTED:
+            self.stop()
+
+        for plugin in reversed(list(self.plugins.values())):
+            if plugin.instance is None or plugin.state == PluginState.CLOSED:
+                continue
+            try:
+                log.info("closing plugin %s", plugin.name)
+                plugin.instance.close()
+                if plugin.state != PluginState.FAILED:
+                    plugin.state = PluginState.CLOSED
+            except Exception as exc:
+                plugin.state = PluginState.FAILED
+                plugin.error = f"close: {type(exc).__name__}: {exc}"
+                log.exception("failed closing plugin %s", plugin.name)
+
+        self.started_order.clear()
+        self.state = PluginManagerState.CLOSED
+
+
+    def _suspend_plugin_tasks(self) -> None:
+        """Suspend all task IDs registered by this manager."""
+        if not self._task_ids or self.config.task_manager is None:
+            return
         for task_id in self._task_ids:
             try:
                 self.config.task_manager.suspend(task_id, for_=0)
             except Exception:
                 log.exception("failed suspending task %s", task_id)
 
-        # Stop plugins in reverse startup order.
+
+    def _stop_started_plugins(self) -> bool:
+        """Stop plugins in reverse successful-start order. Return success."""
+        stopped_cleanly = True
         for name in reversed(self.started_order):
             plugin = self.plugins.get(name)
             if plugin is None or plugin.instance is None or plugin.state != PluginState.STARTED:
@@ -241,22 +343,12 @@ class PluginManager:
                 plugin.instance.stop()
                 plugin.state = PluginState.STOPPED
             except Exception as exc:
+                stopped_cleanly = False
                 plugin.state = PluginState.FAILED
                 plugin.error = f"stop: {type(exc).__name__}: {exc}"
                 log.exception("failed stopping plugin %s", name)
         self.started_order.clear()
-
-        # Close all instantiated plugins, including ones never started.
-        for plugin in reversed(list(self.plugins.values())):
-            if plugin.instance is None:
-                continue
-            try:
-                plugin.instance.close()
-            except Exception as exc:
-                plugin.state = PluginState.FAILED
-                plugin.error = f"shutdown: {type(exc).__name__}: {exc}"
-                log.exception("failed shutting down plugin %s", plugin.name)
-        # Resuming, removing, and clearing tasks belong to the application.
+        return stopped_cleanly
 
 
     def _register_plugin_tasks(self) -> None:
@@ -381,6 +473,16 @@ class PluginManager:
                         "execution != 'direct'"
                     )
 
+    def _validate_task_resumer(self) -> None:
+        """Require task resume support only when a stopped manager restarts."""
+        task_manager = self.config.task_manager
+        resume = getattr(task_manager, "resume", None) if task_manager is not None else None
+        if not callable(resume):
+            raise PluginLifecycleError(
+                "PLUGIN_MANAGER.task_manager must provide resume(task_id) "
+                "to restart a stopped manager with scheduled tasks"
+            )
+
 
     def get_plugin_attribute(self, plugin_name: str, attribute_name: str) -> Any:
         """Return one attribute from one loaded plugin instance.
@@ -388,6 +490,8 @@ class PluginManager:
         Raises ``PluginLoadError`` if the plugin is unknown/not instantiated and
         ``PluginAttributeError`` if the attribute name is invalid or missing.
         """
+        if self.state == PluginManagerState.CLOSED:
+            raise PluginLifecycleError("cannot access plugins after manager.close()")
         plugin = self.plugins.get(plugin_name)
         if plugin is None or plugin.instance is None:
             raise PluginLoadError(f"plugin {plugin_name!r} is not loaded")
@@ -407,6 +511,7 @@ class PluginManager:
     def diagnostics(self) -> dict[str, Any]:
         """Return serializable plugin states and registered task IDs."""
         return {
+            "state": self.state.value,
             "plugins": {
                 name: {
                     "state": plugin.state.value,

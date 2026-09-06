@@ -2,8 +2,10 @@
 
 The application owns the concrete task manager and its global lifecycle.
 PluginManager adds tasks requested by plugins and suspends those tasks when
-it stops. Starting, stopping, resuming, removing, and clearing tasks remain
-application responsibilities.
+it stops. A task manager only needs ``add_task`` and ``suspend`` for a single
+start/stop lifecycle. To restart a stopped PluginManager that owns scheduled
+tasks, the concrete task manager must additionally provide ``resume(task_id)``.
+Global scheduler start/stop/remove/clear operations remain application-owned.
 """
 
 from __future__ import annotations

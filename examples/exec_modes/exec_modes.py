@@ -148,7 +148,7 @@ def main() -> None:
         print(f"task jobs: {task_manager.scheduler.read_jobs()}")
     finally:
         task_manager.scheduler.stop()  # application-owned lifecycle
-        manager.stop()
+        manager.close()
 
 
 if __name__ == "__main__":
