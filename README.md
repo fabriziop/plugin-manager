@@ -7,6 +7,62 @@ Plugin Manager validates plugin schemas, creates plugin instances, manages
 plugin lifecycle, and registers plugin-requested tasks with an application-owned
 task manager.
 
+> **Positioning:** a lightweight Python plugin lifecycle and configuration layer
+> for trusted application plugins, with optional delegation of plugin tasks to
+> an application-owned scheduler.
+
+## Project direction and scope
+
+Plugin Manager intentionally stays small. It is designed for applications that
+need optional, replaceable Python components without adopting a dependency
+injection framework or handing scheduling policy to the plugin layer. Typical
+uses include protocol adapters, data collectors, exporters, device drivers,
+scientific/analysis modules, and application-specific services.
+
+The host application remains the authority for process lifetime, scheduler
+policy, worker pools, observability, and security. Plugins run as ordinary
+Python code in the host process and therefore **must be trusted**. The manager is
+not a sandbox or security boundary.
+
+The architecture deliberately centers on eight guarantees:
+
+1. **Validate before execution where possible.** Structural configuration,
+   enabled-plugin discovery metadata, dependencies, and task declarations are
+   checked before local plugin code or entry-point targets are executed.
+2. **Disabled means not loaded.** A plugin with `enabled: False` is not imported
+   or instantiated.
+3. **Lifecycle is explicit.** The reusable lifecycle is
+   `load() -> start() -> stop() -> start() ... -> close()`, with `close()` as the
+   final operation and failures represented explicitly.
+4. **Configuration is strict.** Unknown plugin configuration keys are rejected
+   rather than silently ignored.
+5. **Dependencies are simple and deterministic.** `requires` forms a validated
+   DAG used for stable startup ordering and reverse shutdown ordering.
+6. **Import side effects are contained.** Local loading does not permanently
+   modify `sys.path`; installed plugins can use Python entry points instead.
+7. **Diagnostics are useful without leaking config.** Lifecycle timing,
+   compatibility, task ownership, structured errors, dependencies, and
+   capabilities are reported, while plugin config contents and tracebacks are
+   excluded and debug config logging redacts secrets.
+8. **Discovery is extensible but narrow.** The default local backend remains
+   simple, while the optional `entry-point` backend supports independently
+   installed plugins without turning discovery into a framework.
+
+### Non-goals
+
+Plugin Manager deliberately does **not** try to provide:
+
+- process or permission isolation for untrusted plugins;
+- dependency injection or automatic service wiring beyond the optional
+  capability registry;
+- package installation, dependency resolution, or a plugin marketplace;
+- a scheduler, worker-pool implementation, or background execution engine;
+- hot code reloading or automatic recovery of failed plugin instances.
+
+This boundary is intentional: the application stays in control, and the plugin
+manager remains a small lifecycle/configuration layer rather than becoming an
+application framework.
+
 ## Main responsibilities
 
 Plugin Manager:

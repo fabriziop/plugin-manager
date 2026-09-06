@@ -1302,9 +1302,6 @@ class PluginManager:
             raise PluginConfigError(f"plugin {name}: missing required config fields: {sorted(missing)}")
 
         try:
-            # Preserve an explicit module value when constants did not set it.
-            if "module" not in values and "module" in pgcfgin:
-                values["module"] = entry["module"]
             pgcfg = pgcfg_class(**values)
         except TypeError as exc:
             raise PluginConfigError(f"plugin {name}: invalid config: {exc}") from exc

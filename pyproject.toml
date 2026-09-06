@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plugin-manager"
-description = "Generic plugin manager for python applications"
+description = "Lightweight lifecycle and configuration manager for trusted Python application plugins"
 readme = "README.md"
 dynamic = ["version"]
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ license = "GPL-3.0-or-later"
 authors = [
     {name = "Fabrizio Pollastri", email = "mxgbot@gmail.com"},
 ]
-keywords = ["plugin", "management"]
+keywords = ["plugin", "management", "lifecycle", "entry-points", "extensions"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
