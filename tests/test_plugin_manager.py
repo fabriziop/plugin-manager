@@ -349,6 +349,100 @@ class TempProject(unittest.TestCase):
         self.assertNotIn("disabled", manager.plugins)
         self.assertNotIn("plugins.disabled", sys.modules)
 
+    def test_local_plugin_load_restores_sys_path(self) -> None:
+        self.write_plugin(
+            "pathsafe",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            """,
+        )
+        root = str(self.tmp)
+        sys.path[:] = [item for item in sys.path if item != root]
+        before = list(sys.path)
+        manager = PluginManager(
+            self.config({"pathsafe": {"enabled": True}}),
+            self.context(),
+        )
+
+        manager.load()
+
+        self.assertEqual(sys.path, before)
+
+    def test_local_plugin_import_failure_restores_sys_path(self) -> None:
+        self.write_plugin(
+            "broken_path",
+            """
+            raise RuntimeError("boom")
+            """,
+        )
+        root = str(self.tmp)
+        sys.path[:] = [item for item in sys.path if item != root]
+        before = list(sys.path)
+        manager = PluginManager(
+            self.config({"broken_path": {"enabled": True}}),
+            self.context(),
+        )
+
+        with self.assertRaises(PluginLoadError):
+            manager.load()
+
+        self.assertEqual(sys.path, before)
+
+    def test_local_plugin_preserves_existing_sys_path_position(self) -> None:
+        self.write_plugin(
+            "positioned",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            """,
+        )
+        root = str(self.tmp)
+        sys.path[:] = [item for item in sys.path if item != root]
+        insert_at = min(2, len(sys.path))
+        sys.path.insert(insert_at, root)
+        before = list(sys.path)
+        manager = PluginManager(
+            self.config({"positioned": {"enabled": True}}),
+            self.context(),
+        )
+
+        manager.load()
+
+        self.assertEqual(sys.path, before)
+
+    def test_local_plugin_relative_import_works_without_persistent_sys_path(self) -> None:
+        (self.plugins / "helper.py").write_text(
+            'VALUE = "relative import works"\n', encoding="utf-8"
+        )
+        self.write_plugin(
+            "relative",
+            """
+            from plugin_manager import PluginBase
+            from .helper import VALUE
+            class P(PluginBase):
+                def value(self):
+                    return VALUE
+            PLUGIN_CLASS = P
+            """,
+        )
+        root = str(self.tmp)
+        sys.path[:] = [item for item in sys.path if item != root]
+        before = list(sys.path)
+        manager = PluginManager(
+            self.config({"relative": {"enabled": True}}),
+            self.context(),
+        )
+
+        manager.load()
+
+        self.assertEqual(manager.get_plugin_attribute("relative", "value")(), "relative import works")
+        self.assertEqual(sys.path, before)
+
     def test_missing_plugin_class(self) -> None:
         self.write_plugin("bad", "X = 1")
         manager = PluginManager(self.config({"bad": {"enabled": True}}), self.context())

@@ -170,6 +170,13 @@ PLUGINS = {
 The configured plugin directory must be an importable package containing
 `__init__.py`, and the selected module must define `PLUGIN_CLASS`.
 
+During a local-plugin import, Plugin Manager temporarily places the required
+application import root at the front of `sys.path` so package and relative
+imports continue to work. The original `sys.path` membership and ordering are
+restored immediately after the import, including when the import fails; loading
+a plugin therefore does not permanently change the host application's import
+resolution order.
+
 ### Entry-point backend
 
 Installed distributions can publish plugins through standard Python package

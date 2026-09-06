@@ -620,35 +620,42 @@ class PluginManager:
             qualified_name = module_name
             import_root = self.plugin_dir
 
-        # Put the application import root first without accumulating copies.
+        # Temporarily put the application import root first.  Local plugins may
+        # need this for package/relative imports, but loading a plugin must not
+        # permanently change the host application's import resolution order.
         root = str(import_root)
-        try:
-            sys.path.remove(root)
-        except ValueError:
-            pass
+        original_sys_path = list(sys.path)
+        sys.path[:] = [item for item in sys.path if item != root]
         sys.path.insert(0, root)
 
-        # Reuse only a cached module that resolves to the expected file.
-        existing = sys.modules.get(qualified_name)
-        if existing is not None:
-            existing_file = getattr(existing, "__file__", None)
-            if existing_file is not None and Path(existing_file).resolve() == path.resolve():
-                return existing
-            sys.modules.pop(qualified_name, None)
-
-        if self.plugin_package:
-            package = sys.modules.get(self.plugin_package)
-            if package is not None:
-                package_paths = [Path(p).resolve() for p in getattr(package, "__path__", [])]
-                if self.plugin_dir not in package_paths:
-                    sys.modules.pop(self.plugin_package, None)
-
-        # Import after invalidating caches so newly written plugins are seen.
-        importlib.invalidate_caches()
         try:
-            return importlib.import_module(qualified_name)
-        except Exception as exc:
-            raise PluginLoadError(f"plugin module {module_name}: import failed: {exc}") from exc
+            # Reuse only a cached module that resolves to the expected file.
+            existing = sys.modules.get(qualified_name)
+            if existing is not None:
+                existing_file = getattr(existing, "__file__", None)
+                if existing_file is not None and Path(existing_file).resolve() == path.resolve():
+                    return existing
+                sys.modules.pop(qualified_name, None)
+
+            if self.plugin_package:
+                package = sys.modules.get(self.plugin_package)
+                if package is not None:
+                    package_paths = [Path(p).resolve() for p in getattr(package, "__path__", [])]
+                    if self.plugin_dir not in package_paths:
+                        sys.modules.pop(self.plugin_package, None)
+
+            # Import after invalidating caches so newly written plugins are seen.
+            importlib.invalidate_caches()
+            try:
+                return importlib.import_module(qualified_name)
+            except Exception as exc:
+                raise PluginLoadError(
+                    f"plugin module {module_name}: import failed: {exc}"
+                ) from exc
+        finally:
+            # Restore both membership and ordering exactly, including failure and
+            # cached-module return paths.
+            sys.path[:] = original_sys_path
 
     @staticmethod
     def _module_config_values(module: ModuleType, config_cls: type[Any]) -> dict[str, Any]:
