@@ -2007,5 +2007,190 @@ class TempProject(unittest.TestCase):
         self.assertTrue(diag["error"]["message"])
 
 
+    def test_repeated_load_is_idempotent(self) -> None:
+        marker = self.tmp / "constructed-count"
+        self.write_plugin(
+            "once",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def __init__(self, config, context):
+                    super().__init__(config, context)
+                    path = Path({str(marker)!r})
+                    count = int(path.read_text(encoding="utf-8")) if path.exists() else 0
+                    path.write_text(str(count + 1), encoding="utf-8")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(self.config({"once": {"enabled": True}}), self.context())
+
+        manager.load()
+        instance = manager.plugins["once"].instance
+        manager.load()
+
+        self.assertIs(manager.plugins["once"].instance, instance)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "1")
+        self.assertEqual(manager.state, PluginManagerState.LOADED)
+
+    def test_partial_task_registration_failure_suspends_registered_tasks(self) -> None:
+        class FailSecondTaskManager(NoOpTaskManager):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            def add_task(self, **task_spec: object) -> str:
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("scheduler rejected second task")
+                return super().add_task(**task_spec)
+
+        self.write_plugin(
+            "worker",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def first(self): pass
+                def second(self): pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        task_manager = FailSecondTaskManager()
+        manager = PluginManager(
+            self.config(
+                {
+                    "worker": {
+                        "enabled": True,
+                        "tasks": {
+                            "first": {"execution": "task"},
+                            "second": {"execution": "task"},
+                        },
+                    }
+                },
+                {"task_manager": task_manager},
+            ),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(PluginLifecycleError, "scheduler rejected second task"):
+            manager.start()
+
+        self.assertEqual(manager.state, PluginManagerState.FAILED)
+        self.assertEqual(manager.diagnostics()["tasks"], ["worker:first"])
+        self.assertEqual(task_manager.suspended, ["worker:first"])
+        self.assertEqual(manager.plugins["worker"].state, PluginState.STOPPED)
+
+    def test_duplicate_configured_task_ids_are_rejected_before_plugin_import(self) -> None:
+        marker = self.tmp / "task-collision-imported"
+        self.write_plugin(
+            "worker",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                def first(self): pass
+                def second(self): pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config(
+                {
+                    "worker": {
+                        "enabled": True,
+                        "tasks": {
+                            "first": {"execution": "task", "task_id": "shared"},
+                            "second": {"execution": "task", "task_id": "shared"},
+                        },
+                    }
+                }
+            ),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(PluginConfigError, "duplicate task_id 'shared'"):
+            manager.load()
+
+        self.assertFalse(marker.exists())
+        self.assertNotIn("plugins.worker", sys.modules)
+
+    def test_task_manager_returned_id_collision_fails_startup(self) -> None:
+        class CollidingTaskManager(NoOpTaskManager):
+            def add_task(self, **task_spec: object) -> str:
+                super().add_task(**task_spec)
+                return "same-id"
+
+        self.write_plugin(
+            "worker",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def first(self): pass
+                def second(self): pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        task_manager = CollidingTaskManager()
+        manager = PluginManager(
+            self.config(
+                {
+                    "worker": {
+                        "enabled": True,
+                        "tasks": {
+                            "first": {"execution": "task"},
+                            "second": {"execution": "task"},
+                        },
+                    }
+                },
+                {"task_manager": task_manager},
+            ),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(PluginLifecycleError, "returned duplicate task_id 'same-id'"):
+            manager.start()
+
+        self.assertEqual(manager.diagnostics()["tasks"], ["same-id"])
+        self.assertEqual(task_manager.suspended, ["same-id"])
+        self.assertEqual(manager.state, PluginManagerState.FAILED)
+
+    def test_invalid_execution_value_is_rejected_before_plugin_import(self) -> None:
+        marker = self.tmp / "invalid-execution-imported"
+        self.write_plugin(
+            "worker",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                def run_once(self): pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config(
+                {
+                    "worker": {
+                        "enabled": True,
+                        "tasks": {
+                            "default": {"execution": "background"},
+                        },
+                    }
+                }
+            ),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(
+            PluginConfigError,
+            "execution must be 'direct' or 'task'",
+        ):
+            manager.load()
+
+        self.assertFalse(marker.exists())
+        self.assertNotIn("plugins.worker", sys.modules)
+
+
 if __name__ == "__main__":
     unittest.main()

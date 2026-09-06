@@ -509,6 +509,10 @@ class PluginManager:
                 task_spec["task"] = self.get_plugin_attribute(plugin_name, method_name)
                 task_spec["task_id"] = requested_id
                 task_id = str(self.config.task_manager.add_task(**task_spec))
+                if task_id in self._task_ids:
+                    raise PluginConfigError(
+                        f"task manager returned duplicate task_id {task_id!r}"
+                    )
                 self._task_ids.append(task_id)
                 self._task_ids_by_plugin.setdefault(plugin_name, []).append(task_id)
 
@@ -625,6 +629,7 @@ class PluginManager:
 
     def _validate_task_specs(self, entries: dict[str, dict[str, Any]]) -> None:
         """Validate task declaration structure without resolving plugin methods."""
+        scheduled_task_ids: dict[str, tuple[str, str]] = {}
         for plugin_name, entry in entries.items():
             tasks = entry.get("tasks", {})
             if not isinstance(tasks, dict):
@@ -643,6 +648,10 @@ class PluginManager:
                     raise PluginConfigError(
                         f"plugin {plugin_name}: task {task_name}: execution must be a string"
                     )
+                if execution not in {"direct", "task"}:
+                    raise PluginConfigError(
+                        f"plugin {plugin_name}: task {task_name}: execution must be 'direct' or 'task'"
+                    )
                 method_name = spec.get("method") or (
                     "run_once" if task_name == "default" else task_name
                 )
@@ -650,6 +659,18 @@ class PluginManager:
                     raise PluginConfigError(
                         f"plugin {plugin_name}: task {task_name}: method must be a valid Python identifier"
                     )
+                if execution == "task":
+                    requested_id = spec.get("task_id") or f"{plugin_name}:{task_name}"
+                    requested_id = str(requested_id)
+                    previous = scheduled_task_ids.get(requested_id)
+                    if previous is not None:
+                        previous_plugin, previous_task = previous
+                        raise PluginConfigError(
+                            f"duplicate task_id {requested_id!r}: "
+                            f"plugin {previous_plugin} task {previous_task} and "
+                            f"plugin {plugin_name} task {task_name}"
+                        )
+                    scheduled_task_ids[requested_id] = (plugin_name, task_name)
 
     def _validate_task_manager(
         self, entries: dict[str, dict[str, Any]] | None = None

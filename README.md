@@ -534,7 +534,7 @@ The pre-import phase validates:
 - dependency declarations, enabled dependency targets, and cycle detection;
 - local module names and module-file existence for local plugins;
 - entry-point presence in the configured group for installed plugins, without loading them;
-- task declaration structure, task names, execution values, and method names;
+- task declaration structure, task names, supported execution values, method names, and duplicate scheduled task IDs;
 - whether a compatible task-manager instance is configured when scheduled
   tasks require one.
 
@@ -745,12 +745,12 @@ PLUGINS = {
 
 Task behavior:
 
-- `execution` defaults to `"direct"`; direct entries are not registered.
-- A non-direct task requires a configured task-manager instance.
+- `execution` defaults to `"direct"`; supported values are `"direct"` and `"task"`.
+- `"direct"` entries are not registered; `"task"` entries require a configured task-manager instance.
 - `method` names the plugin method passed as the scheduler task.
 - If `method` is omitted, the task name is used, except `default`, which maps
   to `run_once`.
-- `task_id` defaults to `<plugin_name>:<task_name>`.
+- `task_id` defaults to `<plugin_name>:<task_name>` and must be unique across scheduled plugin tasks.
 - Remaining fields are forwarded unchanged to `add_task()`.
 - Returned task IDs are stored for diagnostics and later suspension.
 
