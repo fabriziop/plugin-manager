@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from importlib import metadata as importlib_metadata
+import inspect
 import logging
 import sys
 import traceback
@@ -37,6 +38,10 @@ class PluginLoadError(PluginManagerError):
 
 class PluginAttributeError(PluginManagerError):
     """Report access to an invalid or missing plugin attribute."""
+
+
+class PluginCapabilityError(PluginManagerError):
+    """Report invalid capability declarations or capability lookup failures."""
 
 
 class PluginLifecycleError(PluginManagerError):
@@ -85,6 +90,7 @@ class Plugin:
     origin: str | None = None
     required: bool = True
     requires: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,9 +127,11 @@ class PluginContext:
 class PluginManager:
     """Load configured plugins and manage their lifecycle.
 
-    Application access to plugin-provided services is intentionally minimal:
-    call ``get_plugin_attribute(plugin_name, attribute_name)``.  The manager
-    does not know or index capability interfaces.
+    Applications may access a plugin directly with
+    ``get_plugin_attribute(plugin_name, attribute_name)`` or resolve a named
+    service contract with ``get_capability(capability_id)``. Capabilities are
+    optional and declarative; plugins that do not advertise them behave exactly
+    as before.
     """
 
     def __init__(
@@ -173,6 +181,7 @@ class PluginManager:
         self.state = PluginManagerState.NEW
         self._task_ids: list[str] = []
         self._tasks_registered = False
+        self._capabilities: dict[str, tuple[str, str]] = {}
 
 
     def validate(self) -> None:
@@ -626,16 +635,65 @@ class PluginManager:
             ) from exc
 
 
+    def get_capability(self, capability_id: str) -> Any:
+        """Return the object advertised for one capability identifier.
+
+        Capability identifiers are provider-independent names such as
+        ``"mail.send"`` or ``"storage.object"``. A plugin advertises them with
+        a class-level ``CAPABILITIES`` mapping whose values are instance
+        attribute names. Lookup resolves and returns the current bound
+        attribute, so methods are returned as bound methods and service objects
+        can be returned directly.
+        """
+        if self.state == PluginManagerState.CLOSED:
+            raise PluginLifecycleError("cannot access capabilities after manager.close()")
+        self._validate_capability_id(capability_id)
+
+        provider = self._capabilities.get(capability_id)
+        if provider is None:
+            raise PluginCapabilityError(
+                f"capability {capability_id!r} is not provided by any loaded plugin"
+            )
+
+        plugin_name, attribute_name = provider
+        plugin = self.plugins.get(plugin_name)
+        if plugin is None or plugin.instance is None:
+            raise PluginCapabilityError(
+                f"capability {capability_id!r} provider {plugin_name!r} is not loaded"
+            )
+        if plugin.state == PluginState.FAILED:
+            raise PluginCapabilityError(
+                f"capability {capability_id!r} provider {plugin_name!r} has failed"
+            )
+        if plugin.state == PluginState.CLOSED:
+            raise PluginCapabilityError(
+                f"capability {capability_id!r} provider {plugin_name!r} is closed"
+            )
+
+        try:
+            return getattr(plugin.instance, attribute_name)
+        except AttributeError as exc:
+            raise PluginCapabilityError(
+                f"capability {capability_id!r} provider {plugin_name!r} no longer "
+                f"has attribute {attribute_name!r}"
+            ) from exc
+
+
     def diagnostics(self) -> dict[str, Any]:
         """Return serializable plugin states and registered task IDs."""
         return {
             "state": self.state.value,
+            "capabilities": {
+                capability_id: plugin_name
+                for capability_id, (plugin_name, _attribute_name) in self._capabilities.items()
+            },
             "plugins": {
                 name: {
                     "state": plugin.state.value,
                     "error": plugin.error,
                     "required": plugin.required,
                     "requires": list(plugin.requires),
+                    "capabilities": list(plugin.capabilities),
                     "metadata": {
                         "name": plugin.name,
                         "description": plugin.description,
@@ -745,6 +803,8 @@ class PluginManager:
             app_config=self.context.get("app_config"),
         )
         instance = self._instantiate_plugin(name, pg_main_class, config_obj, context)
+        capabilities = self._capabilities_for_plugin(name, pg_main_class, instance)
+        self._check_capability_conflicts(name, capabilities)
         self.plugins[name] = Plugin(
             module=pg_module,
             cls=pg_main_class,
@@ -754,9 +814,73 @@ class PluginManager:
             origin=origin,
             required=bool(pgcfg.get("required", True)),
             requires=tuple(pgcfg.get("requires", [])),
+            capabilities=tuple(capabilities),
             **metadata,
         )
+        for capability_id, attribute_name in capabilities.items():
+            self._capabilities[capability_id] = (name, attribute_name)
         log.debug("plugin %s merged config: %s", name, self._safe_config_dict(config_obj))
+
+    @staticmethod
+    def _validate_capability_id(capability_id: Any) -> None:
+        """Validate a stable dotted capability identifier."""
+        if (
+            not isinstance(capability_id, str)
+            or not capability_id
+            or any(not part.isidentifier() for part in capability_id.split("."))
+        ):
+            raise PluginCapabilityError(
+                f"invalid capability id {capability_id!r}; expected dotted Python identifiers"
+            )
+
+    def _capabilities_for_plugin(
+        self,
+        name: str,
+        cls: type[Any],
+        instance: Any,
+    ) -> dict[str, str]:
+        """Validate and return one plugin's capability declarations."""
+        declared = getattr(cls, "CAPABILITIES", {})
+        if declared is None:
+            return {}
+        if not isinstance(declared, dict):
+            raise PluginCapabilityError(
+                f"plugin {name}: CAPABILITIES must be a dict of capability id to attribute name"
+            )
+
+        capabilities: dict[str, str] = {}
+        for capability_id, attribute_name in declared.items():
+            try:
+                self._validate_capability_id(capability_id)
+            except PluginCapabilityError as exc:
+                raise PluginCapabilityError(f"plugin {name}: {exc}") from exc
+            if not isinstance(attribute_name, str) or not attribute_name.isidentifier():
+                raise PluginCapabilityError(
+                    f"plugin {name}: capability {capability_id!r} must map to a valid "
+                    "instance attribute name"
+                )
+            if inspect.getattr_static(instance, attribute_name, MISSING) is MISSING:
+                raise PluginCapabilityError(
+                    f"plugin {name}: capability {capability_id!r} refers to missing "
+                    f"attribute {attribute_name!r}"
+                )
+            capabilities[capability_id] = attribute_name
+        return capabilities
+
+    def _check_capability_conflicts(
+        self,
+        name: str,
+        capabilities: dict[str, str],
+    ) -> None:
+        """Reject ambiguous capability providers during plugin loading."""
+        for capability_id in capabilities:
+            existing = self._capabilities.get(capability_id)
+            if existing is not None:
+                provider_name, _attribute_name = existing
+                raise PluginCapabilityError(
+                    f"plugin {name}: capability {capability_id!r} is already provided "
+                    f"by plugin {provider_name!r}"
+                )
 
     def _load_plugin_target(
         self, name: str, pgcfg: dict[str, Any]

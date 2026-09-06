@@ -77,9 +77,10 @@ class PluginBaseConfig:
 class PluginBaseCapability(ABC):
     """Optional base class for plugin-defined service interfaces.
 
-    PluginManager does not discover, index, or interpret capabilities.
-    Applications and plugins may still use PluginBaseCapability voluntarily to
-    document their own interfaces.
+    ``PluginManager`` indexes capabilities declared by a plugin's
+    ``PluginBase.CAPABILITIES`` mapping. Capability objects do not have to
+    inherit from this class; applications and plugins may use it voluntarily
+    to give service interfaces an explicit ``CAPABILITY_ID`` contract.
     """
 
     CAPABILITY_ID: ClassVar[str]
@@ -89,6 +90,7 @@ class PluginBase(ABC):
     """Base class for plugins managed by PluginManager."""
 
     Config: ClassVar[type[Any] | None] = None
+    CAPABILITIES: ClassVar[dict[str, str]] = {}
     name: ClassVar[str | None] = None
 
     def __init__(self, config: Any = None, context: Any = None) -> None:

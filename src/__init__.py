@@ -4,6 +4,7 @@ try:  # package import
     from .plugin_base import PluginBaseCapability, PluginBaseConfig, PluginBase
     from .plugin_manager import (
         PluginAttributeError,
+        PluginCapabilityError,
         PluginLifecycleError,
         PluginManager,
         PluginManagerState,
@@ -13,6 +14,7 @@ except ImportError:  # flat src/py-modules import
     from plugin_base import PluginBaseCapability, PluginBaseConfig, PluginBase
     from plugin_manager import (
         PluginAttributeError,
+        PluginCapabilityError,
         PluginLifecycleError,
         PluginManager,
         PluginManagerState,
@@ -23,6 +25,7 @@ __all__ = [
     "PluginBaseCapability",
     "PluginBaseConfig",
     "PluginAttributeError",
+    "PluginCapabilityError",
     "PluginLifecycleError",
     "PluginBase",
     "PluginManager",

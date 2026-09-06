@@ -15,6 +15,7 @@ sys.path.insert(0, str(SRC))
 
 from plugin_manager import (
     PluginAttributeError,
+    PluginCapabilityError,
     PluginConfigError,
     PluginLifecycleError,
     PluginLoadError,
@@ -221,6 +222,137 @@ class TempProject(unittest.TestCase):
             manager.get_plugin_attribute("p1", "missing")
         with self.assertRaises(PluginLoadError):
             manager.get_plugin_attribute("unknown", "x")
+
+    def test_capability_registry_resolves_bound_method(self) -> None:
+        self.write_plugin(
+            "mailer",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                CAPABILITIES = {"mail.send": "send"}
+                def send(self, recipient: str) -> str:
+                    return f"sent:{recipient}"
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"mailer": {"enabled": True}}),
+            self.context(),
+        )
+        manager.load()
+
+        send = manager.get_capability("mail.send")
+
+        self.assertEqual(send("ada@example.test"), "sent:ada@example.test")
+        self.assertEqual(manager.diagnostics()["capabilities"], {"mail.send": "mailer"})
+        self.assertEqual(
+            manager.diagnostics()["plugins"]["mailer"]["capabilities"],
+            ["mail.send"],
+        )
+
+    def test_capability_registry_can_return_service_object(self) -> None:
+        self.write_plugin(
+            "storage",
+            '''
+            from plugin_manager import PluginBase, PluginBaseCapability
+            class Storage(PluginBaseCapability):
+                CAPABILITY_ID = "storage.object"
+                def get(self, key: str) -> str:
+                    return f"value:{key}"
+            class P(PluginBase):
+                CAPABILITIES = {"storage.object": "storage"}
+                def __init__(self, config, context):
+                    super().__init__(config, context)
+                    self.storage = Storage()
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"storage": {"enabled": True}}),
+            self.context(),
+        )
+        manager.load()
+
+        storage = manager.get_capability("storage.object")
+
+        self.assertEqual(storage.get("answer"), "value:answer")
+
+    def test_unknown_or_invalid_capability_lookup_raises(self) -> None:
+        manager = PluginManager(self.config({}), self.context())
+        manager.load()
+
+        with self.assertRaises(PluginCapabilityError):
+            manager.get_capability("mail.send")
+        with self.assertRaises(PluginCapabilityError):
+            manager.get_capability("not a capability")
+
+    def test_duplicate_capability_provider_is_rejected(self) -> None:
+        plugin_source = '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                CAPABILITIES = {"clock.now": "now"}
+                def now(self):
+                    return "now"
+            PLUGIN_CLASS = P
+        '''
+        self.write_plugin("clock1", plugin_source)
+        self.write_plugin("clock2", plugin_source)
+        manager = PluginManager(
+            self.config({
+                "clock1": {"enabled": True},
+                "clock2": {"enabled": True},
+            }),
+            self.context(),
+        )
+
+        with self.assertRaises(PluginCapabilityError):
+            manager.load()
+
+        self.assertEqual(manager.diagnostics()["capabilities"], {"clock.now": "clock1"})
+        self.assertEqual(manager.plugins["clock2"].state, PluginState.FAILED)
+
+    def test_invalid_capability_declaration_is_rejected_during_load(self) -> None:
+        self.write_plugin(
+            "badcap",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                CAPABILITIES = {"mail.send": "missing"}
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"badcap": {"enabled": True}}),
+            self.context(),
+        )
+
+        with self.assertRaises(PluginCapabilityError):
+            manager.load()
+
+        self.assertEqual(manager.plugins["badcap"].state, PluginState.FAILED)
+
+    def test_failed_optional_plugin_capability_is_unavailable(self) -> None:
+        self.write_plugin(
+            "optional_service",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                CAPABILITIES = {"service.ping": "ping"}
+                def ping(self):
+                    return "pong"
+                def start(self):
+                    raise RuntimeError("offline")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"optional_service": {"enabled": True, "required": False}}),
+            self.context(),
+        )
+        manager.start()
+
+        with self.assertRaises(PluginCapabilityError):
+            manager.get_capability("service.ping")
 
     def test_missing_plugin_file(self) -> None:
         manager = PluginManager(self.config({"missing": {"enabled": True}}), self.context())

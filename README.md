@@ -18,6 +18,7 @@ Plugin Manager:
 - creates and starts plugin instances;
 - registers non-direct execution tasks requested by plugins;
 - exposes plugin attributes through `get_plugin_attribute()`;
+- optionally indexes provider-independent services through `get_capability()`;
 - reports plugin state and registered task identifiers.
 
 The application remains responsible for creating, configuring, starting,
@@ -50,6 +51,7 @@ from plugin_manager import (
     PluginBase,
     PluginBaseCapability,
     PluginBaseConfig,
+    PluginCapabilityError,
     PluginManager,
 )
 ```
@@ -552,6 +554,89 @@ try:
     print(greet("Fabrizio"))
 finally:
     manager.close()
+```
+
+## Capabilities
+
+Capabilities are an optional service registry for applications that should not
+need to know which plugin implements a service. Existing direct access through
+`get_plugin_attribute()` remains available and plugins do not have to advertise
+any capabilities.
+
+A plugin advertises capability identifiers with a class-level `CAPABILITIES`
+mapping. Each identifier maps to an attribute on the plugin instance:
+
+```python
+from plugin_manager import PluginBase
+
+
+class MailPlugin(PluginBase):
+    CAPABILITIES = {
+        "mail.send": "send",
+    }
+
+    def send(self, recipient: str, message: str) -> None:
+        ...
+
+
+PLUGIN_CLASS = MailPlugin
+```
+
+The application can then resolve the service without naming the provider:
+
+```python
+send = manager.get_capability("mail.send")
+send("ada@example.test", "Hello")
+```
+
+The advertised attribute may be a method, as above, or a service object:
+
+```python
+from plugin_manager import PluginBase, PluginBaseCapability
+
+
+class ObjectStorage(PluginBaseCapability):
+    CAPABILITY_ID = "storage.object"
+
+    def get(self, key: str) -> bytes:
+        ...
+
+
+class StoragePlugin(PluginBase):
+    CAPABILITIES = {
+        ObjectStorage.CAPABILITY_ID: "storage",
+    }
+
+    def __init__(self, config, context):
+        super().__init__(config, context)
+        self.storage = ObjectStorage()
+```
+
+`PluginBaseCapability` is optional. It is useful for documenting or typing a
+service contract, but the manager does not require capability objects to
+inherit from it.
+
+Capability identifiers are dotted Python identifiers such as `mail.send` or
+`storage.object`. Declarations are checked during `load()` after the plugin
+class is available but before the plugin is recorded as successfully loaded.
+The referenced instance attribute must exist. Two loaded plugins may not
+advertise the same capability identifier; a duplicate is a
+`PluginCapabilityError` instead of silently selecting one provider.
+
+`get_capability()` can be used after `load()` and resolves the current bound
+attribute each time it is called. A capability from a plugin in `FAILED` state
+is unavailable, and capability access is rejected after `manager.close()`.
+
+Diagnostics expose both directions of the registry:
+
+```python
+info = manager.diagnostics()
+
+# provider-independent index
+assert info["capabilities"]["mail.send"] == "mailer"
+
+# capabilities advertised by one plugin
+assert "mail.send" in info["plugins"]["mailer"]["capabilities"]
 ```
 
 `start()` loads plugins automatically when they have not already been loaded.
