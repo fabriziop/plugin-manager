@@ -84,6 +84,7 @@ class Plugin:
     source: str = "local"
     origin: str | None = None
     required: bool = True
+    requires: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +186,7 @@ class PluginManager:
         self._validate_top_level_config()
         entries = self._enabled_plugin_entries()
         self._validate_plugin_sources(entries)
+        self._validate_plugin_dependencies(entries)
         self._validate_task_specs(entries)
         self._validate_task_manager(entries)
 
@@ -244,11 +246,36 @@ class PluginManager:
 
         self.started_order.clear()
         try:
-            for name, plugin in self.plugins.items():
-                if plugin.instance is None or plugin.state == PluginState.FAILED:
+            entries = self._enabled_plugin_entries()
+            for name in self._dependency_order(entries):
+                plugin = self.plugins.get(name)
+                if plugin is None or plugin.instance is None or plugin.state == PluginState.FAILED:
                     continue
                 if plugin.state == PluginState.CLOSED:
                     raise PluginLifecycleError(f"plugin {name!r} is already closed")
+
+                unavailable = [
+                    dependency
+                    for dependency in plugin.requires
+                    if (
+                        self.plugins.get(dependency) is None
+                        or self.plugins[dependency].state != PluginState.STARTED
+                    )
+                ]
+                if unavailable:
+                    exc = PluginLifecycleError(
+                        f"plugin {name!r} dependencies are not started: {unavailable}"
+                    )
+                    self._plugin_failure(name, "dependency", exc)
+                    if plugin.required:
+                        raise exc
+                    log.warning(
+                        "optional plugin %s cannot start because dependencies are unavailable: %s",
+                        name,
+                        unavailable,
+                    )
+                    continue
+
                 log.info("starting plugin %s", name)
                 try:
                     plugin.instance.start()
@@ -425,6 +452,84 @@ class PluginManager:
                     f"in group {self.config.entry_point_group!r}"
                 )
 
+    def _validate_plugin_dependencies(
+        self, entries: dict[str, dict[str, Any]]
+    ) -> None:
+        """Validate dependency names and cycles without importing plugin code."""
+        enabled = set(entries)
+        for name, entry in entries.items():
+            requires = entry.get("requires", [])
+            if name in requires:
+                raise PluginConfigError(f"plugin {name}: cannot depend on itself")
+            missing = [dependency for dependency in requires if dependency not in enabled]
+            if missing:
+                raise PluginConfigError(
+                    f"plugin {name}: dependencies must reference enabled plugins: {missing}"
+                )
+
+        # Computing the order also performs cycle detection.
+        self._dependency_order(entries)
+
+    def _dependency_order(
+        self, entries: dict[str, dict[str, Any]]
+    ) -> list[str]:
+        """Return a stable topological startup order for enabled plugins."""
+        order: list[str] = []
+        completed: set[str] = set()
+
+        while len(order) < len(entries):
+            selected: str | None = None
+            for name, entry in entries.items():
+                if name in completed:
+                    continue
+                if all(
+                    dependency in completed
+                    for dependency in entry.get("requires", [])
+                ):
+                    selected = name
+                    break
+
+            if selected is None:
+                cycle = self._dependency_cycle(entries, completed)
+                raise PluginConfigError(
+                    "plugin dependency cycle: " + " -> ".join(cycle)
+                )
+
+            completed.add(selected)
+            order.append(selected)
+
+        return order
+
+    @staticmethod
+    def _dependency_cycle(
+        entries: dict[str, dict[str, Any]], completed: set[str]
+    ) -> list[str]:
+        """Return one dependency cycle from the unresolved graph."""
+        visiting: list[str] = []
+        visited: set[str] = set(completed)
+
+        def visit(name: str) -> list[str] | None:
+            if name in visiting:
+                start = visiting.index(name)
+                return visiting[start:] + [name]
+            if name in visited:
+                return None
+            visiting.append(name)
+            for dependency in entries[name].get("requires", []):
+                cycle = visit(dependency)
+                if cycle is not None:
+                    return cycle
+            visiting.pop()
+            visited.add(name)
+            return None
+
+        for name in entries:
+            cycle = visit(name)
+            if cycle is not None:
+                return cycle
+        return ["<unknown>"]
+
+
     def _validate_task_specs(self, entries: dict[str, dict[str, Any]]) -> None:
         """Validate task declaration structure without resolving plugin methods."""
         for plugin_name, entry in entries.items():
@@ -530,6 +635,7 @@ class PluginManager:
                     "state": plugin.state.value,
                     "error": plugin.error,
                     "required": plugin.required,
+                    "requires": list(plugin.requires),
                     "metadata": {
                         "name": plugin.name,
                         "description": plugin.description,
@@ -577,6 +683,16 @@ class PluginManager:
                 raise PluginConfigError(f"plugin {name}: 'enabled' must be bool")
             if "required" in entry and not isinstance(entry["required"], bool):
                 raise PluginConfigError(f"plugin {name}: 'required' must be bool")
+            if "requires" in entry:
+                requires = entry["requires"]
+                if not isinstance(requires, list):
+                    raise PluginConfigError(f"plugin {name}: 'requires' must be a list")
+                if any(not isinstance(item, str) or not item.isidentifier() for item in requires):
+                    raise PluginConfigError(
+                        f"plugin {name}: every dependency in 'requires' must be a valid plugin name"
+                    )
+                if len(set(requires)) != len(requires):
+                    raise PluginConfigError(f"plugin {name}: 'requires' contains duplicates")
             source = entry.get("source", "local")
             if source not in {"local", "entry-point"}:
                 raise PluginConfigError(
@@ -637,6 +753,7 @@ class PluginManager:
             source=source,
             origin=origin,
             required=bool(pgcfg.get("required", True)),
+            requires=tuple(pgcfg.get("requires", [])),
             **metadata,
         )
         log.debug("plugin %s merged config: %s", name, self._safe_config_dict(config_obj))
@@ -837,7 +954,7 @@ class PluginManager:
         # than to the plugin Config dataclass, so it is the sole entry-level
         # key accepted in addition to declared Config fields.
         allowed = {f.name for f in fields(pgcfg_class)}
-        manager_keys = {"tasks", "source", "entry_point", "required"}
+        manager_keys = {"tasks", "source", "entry_point", "required", "requires"}
         unknown = set(pgcfgin) - allowed - manager_keys
         if unknown:
             raise PluginConfigError(
@@ -894,10 +1011,16 @@ class PluginManager:
                 if isinstance(configured, dict)
                 else True
             )
+            requires = (
+                configured.get("requires", [])
+                if isinstance(configured, dict)
+                else []
+            )
             plugin = Plugin(
                 name=name,
                 state=PluginState.FAILED,
                 required=required if isinstance(required, bool) else True,
+                requires=tuple(requires) if isinstance(requires, list) else (),
             )
             self.plugins[name] = plugin
         plugin.state = PluginState.FAILED

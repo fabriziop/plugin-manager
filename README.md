@@ -128,6 +128,7 @@ source       Loading backend: "local" (default) or "entry-point"
 module       Local Python module name; defaults to the plugin entry name
 entry_point  Installed entry-point name; defaults to the plugin entry name
 required     Whether startup failure is fatal; Boolean, defaults to True
+requires     List of enabled plugin names that must start first
 tasks        Mapping of task names to task specifications
 ```
 
@@ -201,6 +202,47 @@ The diagnostics entry exposes the effective policy:
 manager.diagnostics()["plugins"]["metrics"]
 # {"state": "failed", "error": "start: ...", "required": False, ...}
 ```
+
+### Plugin dependencies
+
+A plugin may declare direct startup dependencies with the manager-owned
+`requires` field:
+
+```python
+PLUGINS = {
+    "database": {
+        "enabled": True,
+    },
+    "analytics": {
+        "enabled": True,
+        "requires": ["database"],
+    },
+    "dashboard": {
+        "enabled": True,
+        "requires": ["analytics"],
+    },
+}
+```
+
+Dependencies must name other **enabled** plugins. Self-dependencies, duplicate
+names, missing/disabled dependencies, and dependency cycles are rejected with
+`PluginConfigError` during the pre-import validation phase. No plugin code is
+executed to validate the dependency graph.
+
+At startup, the graph is topologically sorted, so dependencies start before
+the plugins that require them regardless of their order in the configuration.
+Plugins that are otherwise unrelated keep a stable order based on the
+`PLUGINS` mapping. `stop()` already uses reverse successful-start order, so
+dependents are stopped before their dependencies.
+
+Dependency availability also follows the per-plugin startup failure policy. If
+an optional dependency (`required=False`) fails to start, a dependent plugin is
+not started. An optional dependent is marked `failed` and startup continues; a
+required dependent makes manager startup fail and triggers the normal rollback.
+Scheduled tasks are registered only for plugins that actually reached
+`started`.
+
+`diagnostics()` exposes each plugin's declared dependencies as `requires`.
 
 ## Plugin discovery and loading backends
 
@@ -457,6 +499,7 @@ The pre-import phase validates:
 - the top-level `PLUGIN_MANAGER` and `PLUGINS` configuration structure;
 - every plugin entry, including the required Boolean `enabled` field;
 - source-specific discovery settings for each enabled plugin;
+- dependency declarations, enabled dependency targets, and cycle detection;
 - local module names and module-file existence for local plugins;
 - entry-point presence in the configured group for installed plugins, without loading them;
 - task declaration structure, task names, execution values, and method names;
@@ -526,8 +569,9 @@ and `closed`. `manager.state` exposes the corresponding `PluginManagerState`.
 - `load()` performs validation and constructs enabled plugins. Repeating it
   while already loaded is a no-op; calling it after start/stop or close is an
   invalid transition.
-- `start()` starts loaded plugins. Calling it while already started is
-  idempotent. Calling it after `stop()` restarts the same plugin instances.
+- `start()` starts loaded plugins in dependency order. Calling it while already
+  started is idempotent. Calling it after `stop()` restarts the same plugin
+  instances in the same dependency-respecting order.
 - `stop()` is reversible: it suspends manager-created tasks and calls plugin
   `stop()` hooks in reverse startup order, but does **not** call `close()`.
 - `close()` is the final, idempotent cleanup operation. If necessary it first

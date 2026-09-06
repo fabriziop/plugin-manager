@@ -1395,6 +1395,224 @@ class TempProject(unittest.TestCase):
         )
         self.assertEqual(cfg.version, "not-a-version")
 
+    def test_dependencies_control_start_and_stop_order(self) -> None:
+        for name in ("base", "middle", "top"):
+            source = """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    self.context.app.append(%r)
+                def stop(self):
+                    self.context.app.append(%r)
+            PLUGIN_CLASS = P
+            """ % ("start:" + name, "stop:" + name)
+            self.write_plugin(name, source)
+
+        events: list[str] = []
+        config = self.config({
+            "top": {"enabled": True, "requires": ["middle"]},
+            "middle": {"enabled": True, "requires": ["base"]},
+            "base": {"enabled": True},
+        })
+        manager = PluginManager(config, {"app_root": self.tmp, "app": events})
+
+        manager.start()
+        self.assertEqual(events, ["start:base", "start:middle", "start:top"])
+        self.assertEqual(manager.started_order, ["base", "middle", "top"])
+
+        manager.stop()
+        self.assertEqual(
+            events,
+            [
+                "start:base", "start:middle", "start:top",
+                "stop:top", "stop:middle", "stop:base",
+            ],
+        )
+
+    def test_dependency_validation_rejects_missing_or_disabled_dependencies(self) -> None:
+        for name in ("consumer", "provider"):
+            self.write_plugin(
+                name,
+                """
+                from plugin_manager import PluginBase
+                class P(PluginBase):
+                    pass
+                PLUGIN_CLASS = P
+                """,
+            )
+        manager = PluginManager(
+            self.config({
+                "consumer": {"enabled": True, "requires": ["provider"]},
+                "provider": {"enabled": False},
+            }),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(PluginConfigError, "dependencies must reference enabled plugins"):
+            manager.validate()
+
+    def test_dependency_validation_rejects_self_dependency_and_cycles(self) -> None:
+        for name in ("a", "b"):
+            self.write_plugin(
+                name,
+                """
+                from plugin_manager import PluginBase
+                class P(PluginBase):
+                    pass
+                PLUGIN_CLASS = P
+                """,
+            )
+
+        self_dep = PluginManager(
+            self.config({"a": {"enabled": True, "requires": ["a"]}}),
+            self.context(),
+        )
+        with self.assertRaisesRegex(PluginConfigError, "cannot depend on itself"):
+            self_dep.validate()
+
+        cycle = PluginManager(
+            self.config({
+                "a": {"enabled": True, "requires": ["b"]},
+                "b": {"enabled": True, "requires": ["a"]},
+            }),
+            self.context(),
+        )
+        with self.assertRaisesRegex(PluginConfigError, "plugin dependency cycle"):
+            cycle.validate()
+
+    def test_dependency_shape_is_rejected_before_plugin_import(self) -> None:
+        marker = self.tmp / "dependency-imported"
+        self.write_plugin(
+            "consumer",
+            """
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path(%r).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            """ % str(marker),
+        )
+        manager = PluginManager(
+            self.config({"consumer": {"enabled": True, "requires": "provider"}}),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(PluginConfigError, "'requires' must be a list"):
+            manager.load()
+
+        self.assertFalse(marker.exists())
+
+    def test_optional_dependency_failure_isolated_and_blocks_optional_dependents(self) -> None:
+        self.write_plugin(
+            "provider",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    raise RuntimeError("provider unavailable")
+            PLUGIN_CLASS = P
+            """,
+        )
+        self.write_plugin(
+            "consumer",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    self.context.app.append("consumer-started")
+            PLUGIN_CLASS = P
+            """,
+        )
+        self.write_plugin(
+            "independent",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    self.context.app.append("independent-started")
+            PLUGIN_CLASS = P
+            """,
+        )
+        events: list[str] = []
+        manager = PluginManager(
+            self.config({
+                "consumer": {
+                    "enabled": True,
+                    "required": False,
+                    "requires": ["provider"],
+                },
+                "provider": {"enabled": True, "required": False},
+                "independent": {"enabled": True},
+            }),
+            {"app_root": self.tmp, "app": events},
+        )
+
+        manager.start()
+
+        self.assertEqual(manager.state, PluginManagerState.STARTED)
+        self.assertEqual(manager.plugins["provider"].state, PluginState.FAILED)
+        self.assertEqual(manager.plugins["consumer"].state, PluginState.FAILED)
+        self.assertIn("dependency:", manager.plugins["consumer"].error or "")
+        self.assertEqual(events, ["independent-started"])
+
+    def test_required_dependent_makes_unavailable_dependency_fatal(self) -> None:
+        self.write_plugin(
+            "provider",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    raise RuntimeError("provider unavailable")
+            PLUGIN_CLASS = P
+            """,
+        )
+        self.write_plugin(
+            "consumer",
+            """
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            """,
+        )
+        manager = PluginManager(
+            self.config({
+                "consumer": {"enabled": True, "requires": ["provider"]},
+                "provider": {"enabled": True, "required": False},
+            }),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(PluginLifecycleError, "dependencies are not started"):
+            manager.start()
+
+        self.assertEqual(manager.state, PluginManagerState.FAILED)
+        self.assertEqual(manager.plugins["consumer"].state, PluginState.FAILED)
+
+    def test_dependency_diagnostics_expose_requires(self) -> None:
+        for name in ("base", "consumer"):
+            self.write_plugin(
+                name,
+                """
+                from plugin_manager import PluginBase
+                class P(PluginBase):
+                    pass
+                PLUGIN_CLASS = P
+                """,
+            )
+        manager = PluginManager(
+            self.config({
+                "consumer": {"enabled": True, "requires": ["base"]},
+                "base": {"enabled": True},
+            }),
+            self.context(),
+        )
+        manager.load()
+
+        diagnostics = manager.diagnostics()
+        self.assertEqual(diagnostics["plugins"]["consumer"]["requires"], ["base"])
+
 
 if __name__ == "__main__":
     unittest.main()
