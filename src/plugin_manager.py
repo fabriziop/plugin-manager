@@ -83,6 +83,7 @@ class Plugin:
     error: str | None = None
     source: str = "local"
     origin: str | None = None
+    required: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,7 +250,16 @@ class PluginManager:
                 if plugin.state == PluginState.CLOSED:
                     raise PluginLifecycleError(f"plugin {name!r} is already closed")
                 log.info("starting plugin %s", name)
-                plugin.instance.start()
+                try:
+                    plugin.instance.start()
+                except Exception as exc:
+                    self._plugin_failure(name, "start", exc)
+                    if plugin.required:
+                        raise
+                    log.warning(
+                        "optional plugin %s failed during startup; continuing", name
+                    )
+                    continue
                 plugin.state = PluginState.STARTED
                 plugin.error = None
                 self.started_order.append(name)
@@ -355,6 +365,9 @@ class PluginManager:
         """Register configured non-direct tasks and remember only their IDs."""
         # Translate each plugin task declaration into a task-manager request.
         for plugin_name, entry in self._enabled_plugin_entries().items():
+            plugin = self.plugins.get(plugin_name)
+            if plugin is None or plugin.state != PluginState.STARTED:
+                continue
             tasks = entry.get("tasks", {})
             if not isinstance(tasks, dict):
                 raise PluginConfigError(f"plugin {plugin_name}: tasks must be a dict")
@@ -516,6 +529,7 @@ class PluginManager:
                 name: {
                     "state": plugin.state.value,
                     "error": plugin.error,
+                    "required": plugin.required,
                     "metadata": {
                         "name": plugin.name,
                         "description": plugin.description,
@@ -561,6 +575,8 @@ class PluginManager:
                 raise PluginConfigError(f"plugin {name}: missing mandatory 'enabled'")
             if not isinstance(entry["enabled"], bool):
                 raise PluginConfigError(f"plugin {name}: 'enabled' must be bool")
+            if "required" in entry and not isinstance(entry["required"], bool):
+                raise PluginConfigError(f"plugin {name}: 'required' must be bool")
             source = entry.get("source", "local")
             if source not in {"local", "entry-point"}:
                 raise PluginConfigError(
@@ -620,6 +636,7 @@ class PluginManager:
             state=PluginState.CREATED,
             source=source,
             origin=origin,
+            required=bool(pgcfg.get("required", True)),
             **metadata,
         )
         log.debug("plugin %s merged config: %s", name, self._safe_config_dict(config_obj))
@@ -820,7 +837,7 @@ class PluginManager:
         # than to the plugin Config dataclass, so it is the sole entry-level
         # key accepted in addition to declared Config fields.
         allowed = {f.name for f in fields(pgcfg_class)}
-        manager_keys = {"tasks", "source", "entry_point"}
+        manager_keys = {"tasks", "source", "entry_point", "required"}
         unknown = set(pgcfgin) - allowed - manager_keys
         if unknown:
             raise PluginConfigError(
@@ -871,7 +888,17 @@ class PluginManager:
         """Record a plugin failure and emit concise diagnostic logging."""
         plugin = self.plugins.get(name)
         if plugin is None:
-            plugin = Plugin(name=name, state=PluginState.FAILED)
+            configured = self.main_config.get("PLUGINS", {}).get(name, {})
+            required = (
+                configured.get("required", True)
+                if isinstance(configured, dict)
+                else True
+            )
+            plugin = Plugin(
+                name=name,
+                state=PluginState.FAILED,
+                required=required if isinstance(required, bool) else True,
+            )
             self.plugins[name] = plugin
         plugin.state = PluginState.FAILED
         plugin.error = f"{phase}: {type(exc).__name__}: {exc}"

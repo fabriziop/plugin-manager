@@ -1013,6 +1013,155 @@ class TempProject(unittest.TestCase):
         with self.assertRaisesRegex(PluginLifecycleError, "after manager.close"):
             manager.get_plugin_attribute("final", "")
 
+    def test_optional_plugin_startup_failure_does_not_fail_manager(self) -> None:
+        self.write_plugin(
+            "optional_bad",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self): raise RuntimeError("optional boom")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        self.write_plugin(
+            "required_good",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self): self.context.manager.events.append("good:start")
+                def stop(self): self.context.manager.events.append("good:stop")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config(
+                {
+                    "optional_bad": {"enabled": True, "required": False},
+                    "required_good": {"enabled": True},
+                }
+            ),
+            self.context(),
+        )
+        manager.events = []  # type: ignore[attr-defined]
+
+        manager.start()
+
+        self.assertEqual(manager.state, PluginManagerState.STARTED)
+        self.assertEqual(manager.plugins["optional_bad"].state, PluginState.FAILED)
+        self.assertIn("optional boom", manager.plugins["optional_bad"].error or "")
+        self.assertEqual(manager.plugins["required_good"].state, PluginState.STARTED)
+        self.assertEqual(manager.events, ["good:start"])  # type: ignore[attr-defined]
+        diag = manager.diagnostics()["plugins"]
+        self.assertFalse(diag["optional_bad"]["required"])
+        self.assertTrue(diag["required_good"]["required"])
+        manager.close()
+        self.assertEqual(manager.events, ["good:start", "good:stop"])  # type: ignore[attr-defined]
+
+    def test_optional_failed_plugin_tasks_are_not_registered(self) -> None:
+        self.write_plugin(
+            "optional_worker",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self): raise RuntimeError("cannot start")
+                def run_once(self): pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        task_manager = NoOpTaskManager()
+        manager = PluginManager(
+            self.config(
+                {
+                    "optional_worker": {
+                        "enabled": True,
+                        "required": False,
+                        "tasks": {
+                            "periodic": {
+                                "execution": "task",
+                                "method": "run_once",
+                            }
+                        },
+                    }
+                },
+                manager={"task_manager": task_manager},
+            ),
+            self.context(),
+        )
+
+        manager.start()
+
+        self.assertEqual(manager.state, PluginManagerState.STARTED)
+        self.assertEqual(manager.plugins["optional_worker"].state, PluginState.FAILED)
+        self.assertEqual(task_manager.tasks, {})
+        self.assertEqual(manager.diagnostics()["tasks"], [])
+        manager.close()
+
+    def test_optional_failed_plugin_is_not_retried_on_restart(self) -> None:
+        self.write_plugin(
+            "optional_once",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self):
+                    self.context.manager.optional_starts += 1
+                    raise RuntimeError("still broken")
+            PLUGIN_CLASS = P
+            ''',
+        )
+        self.write_plugin(
+            "healthy_restart",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                def start(self): self.context.manager.healthy_starts += 1
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config(
+                {
+                    "optional_once": {"enabled": True, "required": False},
+                    "healthy_restart": {"enabled": True},
+                }
+            ),
+            self.context(),
+        )
+        manager.optional_starts = 0  # type: ignore[attr-defined]
+        manager.healthy_starts = 0  # type: ignore[attr-defined]
+
+        manager.start()
+        manager.stop()
+        manager.start()
+
+        self.assertEqual(manager.optional_starts, 1)  # type: ignore[attr-defined]
+        self.assertEqual(manager.healthy_starts, 2)  # type: ignore[attr-defined]
+        self.assertEqual(manager.plugins["optional_once"].state, PluginState.FAILED)
+        manager.close()
+
+    def test_required_must_be_boolean_before_plugin_import(self) -> None:
+        marker_path = self.tmp / "required-imported"
+        self.write_plugin(
+            "required_type",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker_path)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"required_type": {"enabled": True, "required": "no"}}),
+            self.context(),
+        )
+
+        with self.assertRaisesRegex(PluginConfigError, "'required' must be bool"):
+            manager.load()
+
+        self.assertFalse(marker_path.exists())
+        self.assertNotIn("plugins.required_type", sys.modules)
+
     def test_startup_failure_moves_manager_to_failed(self) -> None:
         self.write_plugin(
             "fail_state",

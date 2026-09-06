@@ -127,6 +127,7 @@ Optional manager-level fields in a plugin entry include:
 source       Loading backend: "local" (default) or "entry-point"
 module       Local Python module name; defaults to the plugin entry name
 entry_point  Installed entry-point name; defaults to the plugin entry name
+required     Whether startup failure is fatal; Boolean, defaults to True
 tasks        Mapping of task names to task specifications
 ```
 
@@ -144,7 +145,62 @@ Plugin-specific key validation happens after that enabled plugin's module is
 imported, because its `Config` dataclass defines the accepted schema. It still
 happens before the config object or plugin instance is constructed. Disabled
 plugins are never imported, so their plugin-specific fields are intentionally
-not schema-checked.
+not schema-checked. Manager-owned fields such as `required` are validated for
+all entries before imports begin.
+
+### Per-plugin startup failure policy
+
+Plugins are **required by default**. This preserves fail-fast lifecycle behavior
+for existing configurations:
+
+```python
+PLUGINS = {
+    "database": {
+        "enabled": True,
+    },
+}
+```
+
+If `database.start()` raises, startup is rolled back, the manager enters
+`failed`, and `PluginLifecycleError` is raised.
+
+A non-critical plugin can opt into isolated startup failure with
+`required=False`:
+
+```python
+PLUGINS = {
+    "database": {
+        "enabled": True,
+    },
+    "metrics": {
+        "enabled": True,
+        "required": False,
+    },
+}
+```
+
+If `metrics.start()` raises, that plugin is marked `failed` with its error in
+`diagnostics()`, but startup continues and the manager can still enter
+`started`. Other plugins are not rolled back. Scheduled tasks belonging to the
+failed optional plugin are not registered.
+
+An optional plugin that failed startup is not automatically retried by a later
+`stop()` / `start()` cycle; it remains `failed` for that manager instance. Its
+`close()` hook is still called during final manager cleanup.
+
+`required` controls **startup-hook failures only**. Import, discovery, and
+configuration failures occur during `load()` and remain governed by the
+manager-wide `PLUGIN_MANAGER.fail_policy`. Keeping these policies separate
+allows applications to choose independently whether a broken plugin package
+may be skipped at load time and whether an instantiated plugin is essential at
+runtime.
+
+The diagnostics entry exposes the effective policy:
+
+```python
+manager.diagnostics()["plugins"]["metrics"]
+# {"state": "failed", "error": "start: ...", "required": False, ...}
+```
 
 ## Plugin discovery and loading backends
 
@@ -477,8 +533,11 @@ and `closed`. `manager.state` exposes the corresponding `PluginManagerState`.
 - `close()` is the final, idempotent cleanup operation. If necessary it first
   stops the manager, then calls every instantiated plugin's `close()` hook.
   `load()`, `start()`, and plugin access are rejected after close.
-- A load/start/stop failure places the manager in `failed`; final `close()` is
-  still allowed, but restarting from a partially failed lifecycle is rejected.
+- A load failure governed by fail-fast policy, a required-plugin startup
+  failure, or a stop failure places the manager in `failed`; final `close()` is
+  still allowed, but restarting from a partially failed manager lifecycle is
+  rejected. An optional (`required=False`) plugin startup failure is isolated
+  to that plugin instead.
 
 Plugin states likewise include `created`, `started`, `stopped`, `closed`, and
 `failed`, making diagnostics reflect the lifecycle explicitly.
