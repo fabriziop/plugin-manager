@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from importlib import metadata as importlib_metadata
 import logging
 import sys
 import traceback
@@ -68,6 +69,8 @@ class Plugin:
     instance: Any | None = None
     state: PluginState = PluginState.LOADED
     error: str | None = None
+    source: str = "local"
+    origin: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +80,7 @@ class PluginManagerConfig:
     fail_policy: str = "fail-fast"
     plugin_dir: str = "plugins"
     task_manager: TaskManager | None = None
+    entry_point_group: str = "plugin_manager.plugins"
 
     def __post_init__(self) -> None:
         """Validate values after dataclass field initialization."""
@@ -84,6 +88,8 @@ class PluginManagerConfig:
         if self.fail_policy not in {"fail-fast", "continue-on-error"}:
             raise PluginConfigError(
                 "fail_policy must be 'fail-fast' or 'continue-on-error'")
+        if not isinstance(self.entry_point_group, str) or not self.entry_point_group.strip():
+            raise PluginConfigError("entry_point_group must be a non-empty string")
 
 
 @dataclass(slots=True)
@@ -164,7 +170,7 @@ class PluginManager:
         """
         self._validate_top_level_config()
         entries = self._enabled_plugin_entries()
-        self._validate_plugin_files(entries)
+        self._validate_plugin_sources(entries)
         self._validate_task_specs(entries)
         self._validate_task_manager(entries)
 
@@ -281,13 +287,38 @@ class PluginManager:
                 task_id = self.config.task_manager.add_task(**task_spec)
                 self._task_ids.append(str(task_id))
 
-    def _validate_plugin_files(self, entries: dict[str, dict[str, Any]]) -> None:
-        """Ensure every enabled plugin module exists before importing any plugin."""
+    def _validate_plugin_sources(self, entries: dict[str, dict[str, Any]]) -> None:
+        """Validate enabled plugin sources without executing plugin code."""
+        entry_points: dict[str, Any] | None = None
+        has_local = any(entry.get("source", "local") == "local" for entry in entries.values())
+        if has_local:
+            if not self.plugin_dir.is_dir():
+                raise PluginConfigError(
+                    f"plugin directory does not exist: {self.plugin_dir}"
+                )
+            if not (self.plugin_dir / "__init__.py").is_file():
+                raise PluginConfigError(
+                    "plugin directory must be an importable package with "
+                    f"__init__.py: {self.plugin_dir}"
+                )
+
         for name, entry in entries.items():
-            module_name = str(entry.get("module", name))
-            path = self.plugin_dir / f"{module_name}.py"
-            if not path.is_file():
-                raise PluginLoadError(f"plugin file not found: {path}")
+            source = entry.get("source", "local")
+            if source == "local":
+                module_name = str(entry.get("module", name))
+                path = self.plugin_dir / f"{module_name}.py"
+                if not path.is_file():
+                    raise PluginLoadError(f"plugin file not found: {path}")
+                continue
+
+            if entry_points is None:
+                entry_points = self._entry_points_by_name()
+            entry_point_name = str(entry.get("entry_point", name))
+            if entry_point_name not in entry_points:
+                raise PluginLoadError(
+                    f"plugin {name}: entry point {entry_point_name!r} not found "
+                    f"in group {self.config.entry_point_group!r}"
+                )
 
     def _validate_task_specs(self, entries: dict[str, dict[str, Any]]) -> None:
         """Validate task declaration structure without resolving plugin methods."""
@@ -387,6 +418,8 @@ class PluginManager:
                         "license": plugin.license,
                         "version": plugin.version,
                         "api_version": plugin.api_version,
+                        "source": plugin.source,
+                        "origin": plugin.origin,
                     },
                 }
                 for name, plugin in self.plugins.items()
@@ -409,12 +442,6 @@ class PluginManager:
             raise PluginConfigError("configuration must contain dict 'PLUGIN_MANAGER'")
         if "PLUGINS" not in self.main_config or not isinstance(self.main_config["PLUGINS"], dict):
             raise PluginConfigError("configuration must contain dict 'PLUGINS'")
-        if not self.plugin_dir.is_dir():
-            raise PluginConfigError(f"plugin directory does not exist: {self.plugin_dir}")
-        if not (self.plugin_dir / "__init__.py").is_file():
-            raise PluginConfigError(
-                f"plugin directory must be an importable package with __init__.py: {self.plugin_dir}"
-            )
 
 
     def _enabled_plugin_entries(self) -> dict[str, dict[str, Any]]:
@@ -429,9 +456,33 @@ class PluginManager:
                 raise PluginConfigError(f"plugin {name}: missing mandatory 'enabled'")
             if not isinstance(entry["enabled"], bool):
                 raise PluginConfigError(f"plugin {name}: 'enabled' must be bool")
-            module_name = entry.get("module", name)
-            if not isinstance(module_name, str) or not module_name.isidentifier():
-                raise PluginConfigError(f"plugin {name}: module must be a valid Python identifier")
+            source = entry.get("source", "local")
+            if source not in {"local", "entry-point"}:
+                raise PluginConfigError(
+                    f"plugin {name}: source must be 'local' or 'entry-point'"
+                )
+
+            if source == "local":
+                module_name = entry.get("module", name)
+                if not isinstance(module_name, str) or not module_name.isidentifier():
+                    raise PluginConfigError(
+                        f"plugin {name}: module must be a valid Python identifier"
+                    )
+                if "entry_point" in entry:
+                    raise PluginConfigError(
+                        f"plugin {name}: entry_point is only valid for source='entry-point'"
+                    )
+            else:
+                entry_point_name = entry.get("entry_point", name)
+                if not isinstance(entry_point_name, str) or not entry_point_name.strip():
+                    raise PluginConfigError(
+                        f"plugin {name}: entry_point must be a non-empty string"
+                    )
+                if "module" in entry:
+                    raise PluginConfigError(
+                        f"plugin {name}: module is only valid for source='local'"
+                    )
+
             if entry["enabled"]:
                 out[name] = entry
         return out
@@ -440,18 +491,9 @@ class PluginManager:
     def _load_one(self, name: str, pgcfg: dict[str, Any]) -> None:
         """Import, configure, instantiate, and record one plugin."""
 
-        # Import the configured module from the application plugin package.
-        pg_module_name = str(pgcfg.get("module", name))
-        pg_module = self._import_plugin_module(pg_module_name)
-
-        # Resolve and validate the plugin entry-point class.
-        pg_main_class = getattr(pg_module, "PLUGIN_CLASS", None)
-        if pg_main_class is None:
-            raise PluginLoadError(f"plugin {name}: missing PLUGIN_CLASS")
-        if not isinstance(pg_main_class, type):
-            raise PluginLoadError(f"plugin {name}: PLUGIN_CLASS must be a class")
-        if not issubclass(pg_main_class, PluginBase):
-            raise PluginLoadError(f"plugin {name}: PLUGIN_CLASS must inherit from PluginBase")
+        # Load the plugin through the configured source backend. Existing
+        # configurations default to the local-package backend.
+        pg_module, pg_main_class, source, origin = self._load_plugin_target(name, pgcfg)
 
         # Merge application values and prominent module constants.
         config_obj = self._build_plugin_config(name, pg_main_class, pg_module, pgcfg)
@@ -471,9 +513,84 @@ class PluginManager:
             cls=pg_main_class,
             instance=instance,
             state=PluginState.CREATED,
+            source=source,
+            origin=origin,
             **metadata,
         )
         log.debug("plugin %s merged config: %s", name, self._safe_config_dict(config_obj))
+
+    def _load_plugin_target(
+        self, name: str, pgcfg: dict[str, Any]
+    ) -> tuple[ModuleType, type[Any], str, str]:
+        """Return a plugin module and class from the selected loading backend."""
+        source = str(pgcfg.get("source", "local"))
+        if source == "local":
+            module_name = str(pgcfg.get("module", name))
+            module = self._import_plugin_module(module_name)
+            cls = self._plugin_class_from_module(name, module)
+            return module, cls, source, module_name
+
+        entry_point_name = str(pgcfg.get("entry_point", name))
+        entry_point = self._entry_points_by_name().get(entry_point_name)
+        if entry_point is None:
+            raise PluginLoadError(
+                f"plugin {name}: entry point {entry_point_name!r} not found "
+                f"in group {self.config.entry_point_group!r}"
+            )
+        try:
+            loaded = entry_point.load()
+        except Exception as exc:
+            raise PluginLoadError(
+                f"plugin {name}: entry point {entry_point_name!r} failed to load: {exc}"
+            ) from exc
+
+        if isinstance(loaded, ModuleType):
+            module = loaded
+            cls = self._plugin_class_from_module(name, module)
+        elif isinstance(loaded, type):
+            cls = loaded
+            module = sys.modules.get(cls.__module__)
+            if module is None:
+                try:
+                    module = importlib.import_module(cls.__module__)
+                except Exception as exc:
+                    raise PluginLoadError(
+                        f"plugin {name}: could not resolve module for entry-point class: {exc}"
+                    ) from exc
+            self._validate_plugin_class(name, cls, "entry point")
+        else:
+            raise PluginLoadError(
+                f"plugin {name}: entry point must resolve to a PluginBase subclass "
+                "or a module containing PLUGIN_CLASS"
+            )
+        return module, cls, source, entry_point_name
+
+    def _entry_points_by_name(self) -> dict[str, Any]:
+        """Return installed entry points for the configured group without loading them."""
+        discovered = importlib_metadata.entry_points()
+        if hasattr(discovered, "select"):
+            selected = discovered.select(group=self.config.entry_point_group)
+        else:  # Python/importlib.metadata compatibility path
+            selected = discovered.get(self.config.entry_point_group, ())
+        return {entry_point.name: entry_point for entry_point in selected}
+
+    def _plugin_class_from_module(self, name: str, module: ModuleType) -> type[Any]:
+        """Resolve the conventional PLUGIN_CLASS object from a plugin module."""
+        cls = getattr(module, "PLUGIN_CLASS", None)
+        if cls is None:
+            raise PluginLoadError(f"plugin {name}: missing PLUGIN_CLASS")
+        self._validate_plugin_class(name, cls, "PLUGIN_CLASS")
+        return cls
+
+    @staticmethod
+    def _validate_plugin_class(name: str, cls: Any, label: str) -> None:
+        """Validate a class supplied by either plugin loading backend."""
+        if not isinstance(cls, type):
+            raise PluginLoadError(f"plugin {name}: {label} must be a class")
+        if not issubclass(cls, PluginBase):
+            raise PluginLoadError(
+                f"plugin {name}: {label} must inherit from PluginBase"
+            )
 
     def _instantiate_plugin(
         self,
@@ -591,7 +708,7 @@ class PluginManager:
         # than to the plugin Config dataclass, so it is the sole entry-level
         # key accepted in addition to declared Config fields.
         allowed = {f.name for f in fields(pgcfg_class)}
-        manager_keys = {"tasks"}
+        manager_keys = {"tasks", "source", "entry_point"}
         unknown = set(pgcfgin) - allowed - manager_keys
         if unknown:
             raise PluginConfigError(

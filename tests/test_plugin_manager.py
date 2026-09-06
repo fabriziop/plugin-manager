@@ -20,7 +20,38 @@ from plugin_manager import (
     PluginLoadError,
     PluginManager,
     PluginState,
+    PluginBase,
 )
+
+
+
+
+class FakeEntryPoint:
+    """Minimal importlib.metadata EntryPoint stand-in."""
+
+    def __init__(self, name: str, value: object) -> None:
+        self.name = name
+        self.value = value
+        self.load_calls = 0
+
+    def load(self) -> object:
+        self.load_calls += 1
+        if isinstance(self.value, Exception):
+            raise self.value
+        return self.value
+
+
+class FakeEntryPoints(list[FakeEntryPoint]):
+    """Support the modern EntryPoints.select() API."""
+
+    def __init__(self, group: str, values: list[FakeEntryPoint]) -> None:
+        super().__init__(values)
+        self.group = group
+
+    def select(self, **params: object) -> "FakeEntryPoints":
+        if params.get("group") == self.group:
+            return self
+        return FakeEntryPoints(self.group, [])
 
 
 class FakeScheduler:
@@ -406,6 +437,162 @@ class TempProject(unittest.TestCase):
         manager.load()
 
         self.assertIn("p1", manager.plugins)
+
+    def test_entry_point_validate_does_not_load_plugin_code(self) -> None:
+        class InstalledPlugin(PluginBase):
+            pass
+
+        ep = FakeEntryPoint("installed", InstalledPlugin)
+        manager = PluginManager(
+            self.config(
+                {"installed": {"enabled": True, "source": "entry-point"}},
+                {"entry_point_group": "example.plugins"},
+            ),
+            self.context(),
+        )
+        from unittest.mock import patch
+        with patch(
+            "plugin_manager.importlib_metadata.entry_points",
+            return_value=FakeEntryPoints("example.plugins", [ep]),
+        ):
+            manager.validate()
+        self.assertEqual(ep.load_calls, 0)
+        self.assertEqual(manager.plugins, {})
+
+    def test_entry_point_backend_loads_plugin_class(self) -> None:
+        class InstalledPlugin(PluginBase):
+            def greet(self, name: str) -> str:
+                return f"Installed hello, {name}"
+
+        ep = FakeEntryPoint("installed", InstalledPlugin)
+        manager = PluginManager(
+            self.config(
+                {"logical_name": {
+                    "enabled": True,
+                    "source": "entry-point",
+                    "entry_point": "installed",
+                }},
+                {"entry_point_group": "example.plugins"},
+            ),
+            self.context(),
+        )
+        from unittest.mock import patch
+        with patch(
+            "plugin_manager.importlib_metadata.entry_points",
+            return_value=FakeEntryPoints("example.plugins", [ep]),
+        ):
+            manager.load()
+        self.assertEqual(ep.load_calls, 1)
+        self.assertEqual(
+            manager.get_plugin_attribute("logical_name", "greet")("Ada"),
+            "Installed hello, Ada",
+        )
+        diagnostic = manager.diagnostics()["plugins"]["logical_name"]["metadata"]
+        self.assertEqual(diagnostic["source"], "entry-point")
+        self.assertEqual(diagnostic["origin"], "installed")
+
+    def test_entry_point_backend_does_not_require_local_plugin_directory(self) -> None:
+        class InstalledPlugin(PluginBase):
+            pass
+
+        shutil.rmtree(self.plugins)
+        ep = FakeEntryPoint("installed", InstalledPlugin)
+        manager = PluginManager(
+            self.config(
+                {"installed": {"enabled": True, "source": "entry-point"}},
+                {"entry_point_group": "example.plugins"},
+            ),
+            self.context(),
+        )
+        from unittest.mock import patch
+        with patch(
+            "plugin_manager.importlib_metadata.entry_points",
+            return_value=FakeEntryPoints("example.plugins", [ep]),
+        ):
+            manager.load()
+        self.assertIn("installed", manager.plugins)
+
+    def test_local_and_entry_point_plugins_can_be_mixed(self) -> None:
+        self.write_plugin(
+            "local_plugin",
+            '''
+            from plugin_manager import PluginBase
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        class InstalledPlugin(PluginBase):
+            pass
+        ep = FakeEntryPoint("installed", InstalledPlugin)
+        manager = PluginManager(
+            self.config(
+                {
+                    "local_plugin": {"enabled": True},
+                    "installed_plugin": {
+                        "enabled": True,
+                        "source": "entry-point",
+                        "entry_point": "installed",
+                    },
+                },
+                {"entry_point_group": "example.plugins"},
+            ),
+            self.context(),
+        )
+        from unittest.mock import patch
+        with patch(
+            "plugin_manager.importlib_metadata.entry_points",
+            return_value=FakeEntryPoints("example.plugins", [ep]),
+        ):
+            manager.load()
+        self.assertEqual(set(manager.plugins), {"local_plugin", "installed_plugin"})
+        self.assertEqual(manager.plugins["local_plugin"].source, "local")
+        self.assertEqual(manager.plugins["installed_plugin"].source, "entry-point")
+
+    def test_missing_entry_point_is_rejected_before_loading_any_entry_point(self) -> None:
+        first = FakeEntryPoint("first", type("First", (PluginBase,), {}))
+        manager = PluginManager(
+            self.config(
+                {
+                    "first": {"enabled": True, "source": "entry-point"},
+                    "missing": {"enabled": True, "source": "entry-point"},
+                },
+                {"entry_point_group": "example.plugins"},
+            ),
+            self.context(),
+        )
+        from unittest.mock import patch
+        with patch(
+            "plugin_manager.importlib_metadata.entry_points",
+            return_value=FakeEntryPoints("example.plugins", [first]),
+        ):
+            with self.assertRaisesRegex(PluginLoadError, "entry point 'missing' not found"):
+                manager.load()
+        self.assertEqual(first.load_calls, 0)
+
+    def test_invalid_plugin_source_is_rejected(self) -> None:
+        manager = PluginManager(
+            self.config({"p1": {"enabled": True, "source": "remote"}}),
+            self.context(),
+        )
+        with self.assertRaisesRegex(
+            PluginConfigError, "source must be 'local' or 'entry-point'"
+        ):
+            manager.validate()
+
+    def test_entry_point_source_rejects_module_key(self) -> None:
+        manager = PluginManager(
+            self.config({"p1": {
+                "enabled": True,
+                "source": "entry-point",
+                "module": "p1",
+            }}),
+            self.context(),
+        )
+        with self.assertRaisesRegex(
+            PluginConfigError, "module is only valid for source='local'"
+        ):
+            manager.validate()
 
     def test_lifecycle_order_and_reverse_shutdown(self) -> None:
         for name in ["a", "b"]:

@@ -1,17 +1,18 @@
 # Plugin Manager
 
-A compact Python plugin manager for applications that load plugins from a
-local package. The application supplies plain configuration and context
-mappings, while Plugin Manager validates plugin schemas, creates plugin
-instances, manages plugin lifecycle, and registers plugin-requested tasks with
-an application-owned task manager.
+A compact Python plugin manager for applications that load trusted plugins
+either from a local application package or from installed Python entry points.
+The application supplies plain configuration and context mappings, while
+Plugin Manager validates plugin schemas, creates plugin instances, manages
+plugin lifecycle, and registers plugin-requested tasks with an application-owned
+task manager.
 
 ## Main responsibilities
 
 Plugin Manager:
 
 - validates configuration that can be checked without executing plugin code;
-- loads enabled plugin modules from an application package;
+- loads enabled plugins from a local application package or installed Python entry points;
 - builds each plugin's dataclass configuration;
 - validates plugin version requirements through `PluginBaseConfig`;
 - creates and starts plugin instances;
@@ -84,6 +85,7 @@ PLUGIN_MANAGER = {
     "fail_policy": "fail-fast",
     "plugin_dir": "plugins",
     "task_manager": task_manager_instance,
+    "entry_point_group": "plugin_manager.plugins",
 }
 ```
 
@@ -92,7 +94,8 @@ Defaults:
 ```text
 fail_policy   "fail-fast"
 plugin_dir    "plugins"
-task_manager  None
+task_manager       None
+entry_point_group    "plugin_manager.plugins"
 ```
 
 `fail_policy` accepts:
@@ -121,9 +124,15 @@ PLUGINS = {
 Optional manager-level fields in a plugin entry include:
 
 ```text
-module  Python module name; defaults to the plugin entry name
-tasks   Mapping of task names to task specifications
+source       Loading backend: "local" (default) or "entry-point"
+module       Local Python module name; defaults to the plugin entry name
+entry_point  Installed entry-point name; defaults to the plugin entry name
+tasks        Mapping of task names to task specifications
 ```
+
+`module` is valid only for `source="local"`. `entry_point` is valid only for
+`source="entry-point"`. Local and entry-point plugins may be mixed in the same
+`PLUGINS` mapping.
 
 All other accepted values must correspond to fields in the plugin's config
 dataclass. Unknown keys are rejected with `PluginConfigError`; they are not
@@ -136,6 +145,75 @@ imported, because its `Config` dataclass defines the accepted schema. It still
 happens before the config object or plugin instance is constructed. Disabled
 plugins are never imported, so their plugin-specific fields are intentionally
 not schema-checked.
+
+## Plugin discovery and loading backends
+
+Plugin discovery is explicit and intentionally limited to two trusted-code
+backends. The existing local-package behavior remains the default, so existing
+configurations need no changes.
+
+### Local backend
+
+With no `source` field, or with `source="local"`, Plugin Manager loads a module
+from `PLUGIN_MANAGER.plugin_dir` exactly as before:
+
+```python
+PLUGINS = {
+    "greeter": {
+        "enabled": True,
+        # source defaults to "local"
+        # module defaults to "greeter"
+    },
+}
+```
+
+The configured plugin directory must be an importable package containing
+`__init__.py`, and the selected module must define `PLUGIN_CLASS`.
+
+### Entry-point backend
+
+Installed distributions can publish plugins through standard Python package
+entry points. Select the backend per plugin:
+
+```python
+PLUGIN_MANAGER = {
+    "entry_point_group": "plugin_manager.plugins",
+}
+
+PLUGINS = {
+    "metrics": {
+        "enabled": True,
+        "source": "entry-point",
+        "entry_point": "prometheus_metrics",
+    },
+}
+```
+
+The `entry_point` value defaults to the logical plugin name when omitted. The
+entry point may resolve either directly to a `PluginBase` subclass or to a
+module containing the conventional `PLUGIN_CLASS`. For example, an installed
+distribution can publish a class in `pyproject.toml`:
+
+```toml
+[project.entry-points."plugin_manager.plugins"]
+prometheus_metrics = "my_metrics.plugin:MetricsPlugin"
+```
+
+or publish a module:
+
+```toml
+[project.entry-points."plugin_manager.plugins"]
+prometheus_metrics = "my_metrics.plugin"
+```
+
+Entry-point metadata is inspected during `validate()` without calling
+`EntryPoint.load()`, so validation can confirm that every configured installed
+plugin exists before any entry-point plugin code executes. Actual loading is
+deferred to `load()`. An application using only entry-point plugins does not
+need a local plugin directory.
+
+This backend is discovery and loading, not sandboxing: installed plugins execute
+in the application process with the application's Python permissions.
 
 ## Runtime context
 
@@ -315,14 +393,16 @@ The pre-import phase validates:
 
 - the top-level `PLUGIN_MANAGER` and `PLUGINS` configuration structure;
 - every plugin entry, including the required Boolean `enabled` field;
-- module names and the existence of module files for enabled plugins;
+- source-specific discovery settings for each enabled plugin;
+- local module names and module-file existence for local plugins;
+- entry-point presence in the configured group for installed plugins, without loading them;
 - task declaration structure, task names, execution values, and method names;
 - whether a compatible task-manager instance is configured when scheduled
   tasks require one.
 
 Disabled plugins are not imported or instantiated. Their entry structure is
-still validated where possible, but module-file existence is checked only for
-enabled plugins.
+still validated where possible, but local module-file existence and installed
+entry-point presence are checked only for enabled plugins.
 
 Plugin-specific dataclass validation cannot run during this phase because the
 plugin's `Config` class is defined inside the plugin module. That validation
