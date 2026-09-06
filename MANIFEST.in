@@ -1,0 +1,16 @@
+include LICENSE
+include README.md
+include pyproject.toml
+recursive-include src *.py
+recursive-include examples *.py *.md
+recursive-include tests *.py
+
+# Defense in depth: never ship local/generated artifacts in an sdist.
+prune ai
+prune debian
+prune build
+prune build-deb
+prune debpkg
+prune dist
+recursive-exclude * __pycache__ *.py[cod]
+global-exclude *.deb *.egg

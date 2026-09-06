@@ -1,0 +1,20 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Python packaging outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Project-generated release staging/artifacts
+/debian/
+/build-deb/
+/debpkg/
+/*.deb
+
+# Local research / generated working material
+/ai/

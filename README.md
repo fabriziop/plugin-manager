@@ -885,3 +885,25 @@ Fabrizio Pollastri <mxgbot@gmail.com>
 ## Copyright
 
 Copyright (C) 2026 Fabrizio Pollastri
+
+## Packaging and release hygiene
+
+The repository keeps generated build output and local working material out of
+source distributions and release archives. Python package artifacts belong in
+`dist/`; Debian staging is generated under `debian/` and the resulting `.deb`
+is a build artifact rather than source. Local `ai/` research material is also
+not part of the distributable project.
+
+The supported Python version declared by the package is Python 3.9 or newer.
+The Trove classifiers are kept consistent with that requirement.
+
+Before preparing a release, run:
+
+```sh
+make clean
+make test
+```
+
+`MANIFEST.in` provides a second layer of protection for source distributions by
+explicitly pruning generated staging directories, caches, local working files,
+and binary package artifacts even if they happen to exist in the working tree.
