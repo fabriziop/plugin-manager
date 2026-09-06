@@ -478,6 +478,32 @@ def __post_init__(self) -> None:
     # Additional plugin-specific checks follow.
 ```
 
+## Secret values in debug logging
+
+The manager logs a merged plugin configuration at `DEBUG` level, but credential-like
+values are redacted before the record is emitted. Common names such as `password`,
+`token`, `api_key`, `access_key`, `private_key`, and `secret` are redacted
+automatically, including when they appear inside nested dictionaries.
+
+For application-specific names, mark the dataclass field explicitly:
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass(frozen=True)
+class ServiceConfig(PluginBaseConfig):
+    endpoint: str
+    client_pin: str = field(repr=False, metadata={"secret": True})
+```
+
+A field with `metadata={"secret": True}` is always rendered as `"***"` in the
+manager's configuration debug log. `repr=False` is also recommended so the secret
+is not exposed if application code logs or prints the dataclass itself. Redaction
+changes logging only; the plugin still receives the original value in its config.
+
+This protection applies to configuration logging performed by `PluginManager`. Plugin
+implementations remain responsible for not logging credentials themselves.
+
 ## Validation phase
 
 `PluginManager.validate()` performs a pre-import validation pass. It checks all

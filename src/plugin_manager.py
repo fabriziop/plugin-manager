@@ -8,11 +8,12 @@ import inspect
 import logging
 import sys
 import traceback
-from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from collections.abc import Mapping
 
 try:  # package import
     from .plugin_base import PluginBaseCapability, PluginBaseConfig, PluginBase
@@ -22,6 +23,22 @@ except ImportError:  # flat src/py-modules import
     from task_manager import TaskManager
 
 log = logging.getLogger("plugin_manager")
+
+
+_SECRET_CONFIG_NAMES = frozenset({
+    "api_key",
+    "access_key",
+    "secret_key",
+    "private_key",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "credentials",
+})
+_SECRET_CONFIG_SUFFIXES = ("_password", "_secret", "_token", "_api_key", "_access_key", "_private_key")
+_REDACTED = "***"
 
 
 class PluginManagerError(Exception):
@@ -1112,12 +1129,54 @@ class PluginManager:
         return pgcfg
 
     @staticmethod
-    def _safe_config_dict(config_obj: Any) -> dict[str, Any] | None:
-        """Convert a dataclass config to a safe diagnostic dictionary."""
+    def _is_secret_config_name(name: Any) -> bool:
+        """Return whether a config key looks like a credential-bearing field."""
+        if not isinstance(name, str):
+            return False
+        normalized = name.strip().lower().replace("-", "_")
+        return (
+            normalized in _SECRET_CONFIG_NAMES
+            or normalized.endswith(_SECRET_CONFIG_SUFFIXES)
+        )
+
+    @classmethod
+    def _redact_config_value(cls, value: Any) -> Any:
+        """Return a logging-safe copy of supported config container values."""
+        if is_dataclass(value) and not isinstance(value, type):
+            out: dict[str, Any] = {}
+            for item in fields(value):
+                field_value = getattr(value, item.name)
+                if item.metadata.get("secret") or cls._is_secret_config_name(item.name):
+                    out[item.name] = _REDACTED
+                else:
+                    out[item.name] = cls._redact_config_value(field_value)
+            return out
+        if isinstance(value, Mapping):
+            return {
+                key: (
+                    _REDACTED
+                    if cls._is_secret_config_name(key)
+                    else cls._redact_config_value(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._redact_config_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._redact_config_value(item) for item in value)
+        if isinstance(value, set):
+            return {cls._redact_config_value(item) for item in value}
+        if isinstance(value, frozenset):
+            return frozenset(cls._redact_config_value(item) for item in value)
+        return value
+
+    @classmethod
+    def _safe_config_dict(cls, config_obj: Any) -> dict[str, Any] | None:
+        """Convert a dataclass config to a recursively redacted log dictionary."""
         if config_obj is None:
             return None
-        if is_dataclass(config_obj):
-            return asdict(config_obj)
+        if is_dataclass(config_obj) and not isinstance(config_obj, type):
+            return cls._redact_config_value(config_obj)
         return None
 
     def _plugin_failure(

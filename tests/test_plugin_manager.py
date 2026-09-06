@@ -1745,6 +1745,82 @@ class TempProject(unittest.TestCase):
         diagnostics = manager.diagnostics()
         self.assertEqual(diagnostics["plugins"]["consumer"]["requires"], ["base"])
 
+    def test_debug_config_logging_redacts_common_and_nested_secret_keys(self) -> None:
+        self.write_plugin(
+            "secure",
+            """
+            from dataclasses import dataclass, field
+            from plugin_manager import PluginBaseConfig, PluginBase
+            @dataclass(frozen=True)
+            class Cfg(PluginBaseConfig):
+                endpoint: str = "https://example.invalid"
+                api_key: str = "default-api-key"
+                options: dict = field(default_factory=dict)
+            class P(PluginBase):
+                Config = Cfg
+            PLUGIN_CLASS = P
+            """,
+        )
+        manager = PluginManager(
+            self.config({
+                "secure": {
+                    "enabled": True,
+                    "endpoint": "https://service.invalid",
+                    "api_key": "TOP-SECRET-API-KEY",
+                    "options": {
+                        "token": "TOP-SECRET-TOKEN",
+                        "region": "eu-west",
+                    },
+                }
+            }),
+            self.context(),
+        )
+
+        with self.assertLogs("plugin_manager", level="DEBUG") as captured:
+            manager.load()
+
+        output = "\n".join(captured.output)
+        self.assertNotIn("TOP-SECRET-API-KEY", output)
+        self.assertNotIn("TOP-SECRET-TOKEN", output)
+        self.assertIn("'api_key': '***'", output)
+        self.assertIn("'token': '***'", output)
+        self.assertIn("https://service.invalid", output)
+        self.assertIn("eu-west", output)
+
+    def test_debug_config_logging_honors_secret_field_metadata(self) -> None:
+        self.write_plugin(
+            "secure_metadata",
+            """
+            from dataclasses import dataclass, field
+            from plugin_manager import PluginBaseConfig, PluginBase
+            @dataclass(frozen=True)
+            class Cfg(PluginBaseConfig):
+                client_pin: str = field(default="0000", metadata={"secret": True})
+                label: str = "visible"
+            class P(PluginBase):
+                Config = Cfg
+            PLUGIN_CLASS = P
+            """,
+        )
+        manager = PluginManager(
+            self.config({
+                "secure_metadata": {
+                    "enabled": True,
+                    "client_pin": "987654",
+                    "label": "public-label",
+                }
+            }),
+            self.context(),
+        )
+
+        with self.assertLogs("plugin_manager", level="DEBUG") as captured:
+            manager.load()
+
+        output = "\n".join(captured.output)
+        self.assertNotIn("987654", output)
+        self.assertIn("'client_pin': '***'", output)
+        self.assertIn("public-label", output)
+
 
 if __name__ == "__main__":
     unittest.main()
