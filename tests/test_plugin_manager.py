@@ -189,6 +189,30 @@ class TempProject(unittest.TestCase):
         with self.assertRaises(PluginLoadError):
             manager.load()
 
+    def test_disabled_plugin_is_not_imported_or_loaded(self) -> None:
+        marker = self.tmp / "disabled-imported"
+        self.write_plugin(
+            "disabled",
+            f'''
+            from pathlib import Path
+            from plugin_manager import PluginBase
+            Path({str(marker)!r}).write_text("imported", encoding="utf-8")
+            class P(PluginBase):
+                pass
+            PLUGIN_CLASS = P
+            ''',
+        )
+        manager = PluginManager(
+            self.config({"disabled": {"enabled": False}}),
+            self.context(),
+        )
+
+        manager.load()
+
+        self.assertFalse(marker.exists())
+        self.assertNotIn("disabled", manager.plugins)
+        self.assertNotIn("plugins.disabled", sys.modules)
+
     def test_missing_plugin_class(self) -> None:
         self.write_plugin("bad", "X = 1")
         manager = PluginManager(self.config({"bad": {"enabled": True}}), self.context())

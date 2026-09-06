@@ -158,8 +158,8 @@ class PluginManager:
         """Validate, import, and construct enabled plugins without starting."""
         # Validate the complete input before importing application code.
         self._validate_top_level_config()
-        entries = self.main_config.get("PLUGINS", {})
-        log.info("loading %d configured plugins", len(entries))
+        entries = self._enabled_plugin_entries()
+        log.info("loading %d enabled plugins", len(entries))
 
         # Load plugins independently so the configured failure policy applies.
         for name, pgcfg in entries.items():
