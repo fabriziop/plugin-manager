@@ -885,6 +885,85 @@ plugins should avoid embedding credentials in exception text.
 
 Diagnostics do not query global scheduler state.
 
+## Build and install
+
+Plugin Manager can be installed in a python virtual environment or as
+Debian package.
+
+
+### Install a Virtual Environment 
+
+Plugin Manager requires Python 3.9 or newer. For development or use directly
+from a source checkout, create and activate a virtual environment, then install
+the project in editable mode:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+For a regular installation from the source tree:
+
+```bash
+python -m pip install .
+```
+
+Release artifacts are built as both a source distribution and wheel. The
+release build uses `setuptools-scm`, so `make dist` must be run from a Git
+working tree whose `HEAD` is exactly on a valid release tag:
+
+```bash
+python -m pip install build
+git tag -a v1.0.0 -m "Version 1.0.0"
+make dist
+```
+
+The resulting artifacts are written to `dist/`. Install the wheel with:
+
+```bash
+python -m pip install dist/plugin_manager-<version>-py3-none-any.whl
+```
+
+
+### Build a Debian package
+
+A Debian package can also be built from the same release tag. The build requires
+`dpkg-deb` (provided by the `dpkg` package on Debian/Ubuntu) and must be run from
+a Git working tree whose `HEAD` is exactly on a release tag:
+
+```bash
+sudo apt install dpkg
+git tag -a v1.0.0 -m "Version 1.0.0"
+make deb
+```
+
+The build creates an architecture-independent package in the project root:
+
+```text
+python3-plugin-manager_<version>-1_all.deb
+```
+
+Install it with:
+
+```bash
+sudo apt install ./python3-plugin-manager_<version>-1_all.deb
+```
+
+The Debian package installs the Python package under
+`/usr/lib/python3/dist-packages/plugin_manager/` and declares runtime
+dependencies on Python 3.9 or newer and `python3-packaging`.
+
+Run the test suite before building release artifacts:
+
+```bash
+make clean
+make test
+make dist
+make deb
+```
+
 ## Examples
 
 Run from the project root.
@@ -938,9 +1017,6 @@ later. See [LICENSE](LICENSE).
 
 Fabrizio Pollastri <mxgbot@gmail.com>
 
-## Copyright
-
-Copyright (C) 2026 Fabrizio Pollastri
 
 ## Packaging and release hygiene
 
@@ -963,3 +1039,7 @@ make test
 `MANIFEST.in` provides a second layer of protection for source distributions by
 explicitly pruning generated staging directories, caches, local working files,
 and binary package artifacts even if they happen to exist in the working tree.
+
+---
+
+Copyright (C) 2026 Fabrizio Pollastri
